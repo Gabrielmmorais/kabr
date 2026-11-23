@@ -1,0 +1,22 @@
+digraph kabr {
+    rankdir=LR;
+    node [shape=box];
+    "audit.event_log" [label="audit.event_log"];
+    "audit.retention_policy" [label="audit.retention_policy"];
+    "public.assignment" [label="public.assignment"];
+    "public.department" [label="public.department"];
+    "public.employee" [label="public.employee"];
+    "public.employee_badge" [label="public.employee_badge"];
+    "public.project" [label="public.project"];
+    "public.timesheet" [label="public.timesheet"];
+    "audit.retention_policy" -> "audit.retention_policy" [label="retention_policy_parent_id_fkey"];
+    "public.assignment" -> "public.employee" [label="assignment_employee_id_fkey"];
+    "public.assignment" -> "public.project" [label="assignment_project_id_fkey"];
+    "public.employee" -> "public.department" [label="employee_department_id_fkey"];
+    "public.employee" -> "public.employee" [label="employee_manager_id_fkey"];
+    "public.employee_badge" -> "public.employee" [label="employee_badge_employee_id_fkey"];
+    "public.project" -> "public.department" [label="project_department_id_fkey"];
+    "public.project" -> "public.employee" [label="project_owner_id_fkey"];
+    "public.project" -> "public.employee" [label="project_reviewer_id_fkey"];
+    "public.timesheet" -> "public.assignment" [label="timesheet_assignment_fkey"];
+}

@@ -1,0 +1,129 @@
+{
+  "schemaVersion": "kabr.dev/v1alpha1",
+  "dialect": "postgres",
+  "database": "company",
+  "schemas": ["public", "audit"],
+  "tables": [
+    {
+      "schema": "public",
+      "name": "employee",
+      "comment": "People employed by the company",
+      "columns": [
+        {"name": "id", "ordinal": 1, "dataType": "integer", "nullable": false, "default": "nextval('employee_id_seq'::regclass)"},
+        {"name": "full_name", "ordinal": 2, "dataType": "character varying(120)", "nullable": false, "comment": "Display name, \"as printed\""},
+        {"name": "email", "ordinal": 3, "dataType": "text", "nullable": false},
+        {"name": "department_id", "ordinal": 4, "dataType": "integer", "nullable": false},
+        {"name": "manager_id", "ordinal": 5, "dataType": "integer", "nullable": true, "comment": "Direct manager; NULL for the CEO"},
+        {"name": "hired_at", "ordinal": 6, "dataType": "timestamp with time zone", "nullable": false, "default": "now()"},
+        {"name": "skills", "ordinal": 7, "dataType": "text[]", "nullable": true}
+      ],
+      "primaryKey": {"name": "employee_pkey", "columns": ["id"]},
+      "foreignKeys": [
+        {"name": "employee_manager_id_fkey", "columns": ["manager_id"], "refSchema": "public", "refTable": "employee", "refColumns": ["id"], "onDelete": "SET NULL", "onUpdate": "NO ACTION"},
+        {"name": "employee_department_id_fkey", "columns": ["department_id"], "refSchema": "public", "refTable": "department", "refColumns": ["id"], "onDelete": "RESTRICT", "onUpdate": "NO ACTION"}
+      ],
+      "indexes": [
+        {"name": "employee_pkey", "columns": ["id"], "unique": true, "primary": true, "method": "btree"},
+        {"name": "employee_email_key", "columns": ["email"], "unique": true, "method": "btree"},
+        {"name": "employee_lower_name_idx", "columns": ["lower((full_name)::text)"], "method": "btree"}
+      ],
+      "uniqueConstraints": [
+        {"name": "employee_email_key", "columns": ["email"]}
+      ],
+      "stats": {"estimatedRows": 1200}
+    },
+    {
+      "schema": "public",
+      "name": "department",
+      "columns": [
+        {"name": "id", "ordinal": 1, "dataType": "integer", "nullable": false},
+        {"name": "name", "ordinal": 2, "dataType": "character varying(45)", "nullable": false, "stats": {"nDistinct": -1}}
+      ],
+      "primaryKey": {"name": "department_pkey", "columns": ["id"]},
+      "stats": {"estimatedRows": 12}
+    },
+    {
+      "schema": "public",
+      "name": "project",
+      "columns": [
+        {"name": "id", "ordinal": 1, "dataType": "integer", "nullable": false},
+        {"name": "title", "ordinal": 2, "dataType": "text", "nullable": false},
+        {"name": "department_id", "ordinal": 3, "dataType": "integer", "nullable": true},
+        {"name": "owner_id", "ordinal": 4, "dataType": "integer", "nullable": false},
+        {"name": "reviewer_id", "ordinal": 5, "dataType": "integer", "nullable": true},
+        {"name": "budget", "ordinal": 6, "dataType": "numeric(12,2)", "nullable": true}
+      ],
+      "primaryKey": {"name": "project_pkey", "columns": ["id"]},
+      "foreignKeys": [
+        {"name": "project_department_id_fkey", "columns": ["department_id"], "refSchema": "public", "refTable": "department", "refColumns": ["id"], "onDelete": "SET NULL", "onUpdate": "NO ACTION"},
+        {"name": "project_owner_id_fkey", "columns": ["owner_id"], "refSchema": "public", "refTable": "employee", "refColumns": ["id"], "onDelete": "NO ACTION", "onUpdate": "NO ACTION"},
+        {"name": "project_reviewer_id_fkey", "columns": ["reviewer_id"], "refSchema": "public", "refTable": "employee", "refColumns": ["id"], "onDelete": "NO ACTION", "onUpdate": "NO ACTION"}
+      ]
+    },
+    {
+      "schema": "public",
+      "name": "assignment",
+      "comment": "Which employee works on which project",
+      "columns": [
+        {"name": "employee_id", "ordinal": 1, "dataType": "integer", "nullable": false},
+        {"name": "project_id", "ordinal": 2, "dataType": "integer", "nullable": false},
+        {"name": "role", "ordinal": 3, "dataType": "character varying(30)", "nullable": true}
+      ],
+      "primaryKey": {"name": "assignment_pkey", "columns": ["employee_id", "project_id"]},
+      "foreignKeys": [
+        {"name": "assignment_employee_id_fkey", "columns": ["employee_id"], "refSchema": "public", "refTable": "employee", "refColumns": ["id"], "onDelete": "CASCADE", "onUpdate": "NO ACTION"},
+        {"name": "assignment_project_id_fkey", "columns": ["project_id"], "refSchema": "public", "refTable": "project", "refColumns": ["id"], "onDelete": "CASCADE", "onUpdate": "NO ACTION"}
+      ]
+    },
+    {
+      "schema": "public",
+      "name": "timesheet",
+      "columns": [
+        {"name": "id", "ordinal": 1, "dataType": "bigint", "nullable": false},
+        {"name": "employee_id", "ordinal": 2, "dataType": "integer", "nullable": false},
+        {"name": "project_id", "ordinal": 3, "dataType": "integer", "nullable": false},
+        {"name": "work_day", "ordinal": 4, "dataType": "date", "nullable": false},
+        {"name": "hours", "ordinal": 5, "dataType": "double precision", "nullable": false}
+      ],
+      "primaryKey": {"name": "timesheet_pkey", "columns": ["id"]},
+      "foreignKeys": [
+        {"name": "timesheet_assignment_fkey", "columns": ["employee_id", "project_id"], "refSchema": "public", "refTable": "assignment", "refColumns": ["employee_id", "project_id"], "onDelete": "CASCADE", "onUpdate": "NO ACTION"}
+      ]
+    },
+    {
+      "schema": "public",
+      "name": "employee_badge",
+      "columns": [
+        {"name": "employee_id", "ordinal": 1, "dataType": "integer", "nullable": false},
+        {"name": "badge_code", "ordinal": 2, "dataType": "character(8)", "nullable": false}
+      ],
+      "primaryKey": {"name": "employee_badge_pkey", "columns": ["employee_id"]},
+      "foreignKeys": [
+        {"name": "employee_badge_employee_id_fkey", "columns": ["employee_id"], "refSchema": "public", "refTable": "employee", "refColumns": ["id"], "onDelete": "CASCADE", "onUpdate": "NO ACTION"}
+      ]
+    },
+    {
+      "schema": "audit",
+      "name": "event_log",
+      "comment": "Append-only audit trail (no foreign keys)",
+      "columns": [
+        {"name": "id", "ordinal": 1, "dataType": "bigint", "nullable": false},
+        {"name": "payload", "ordinal": 2, "dataType": "jsonb", "nullable": false},
+        {"name": "created_at", "ordinal": 3, "dataType": "timestamp without time zone", "nullable": false}
+      ],
+      "primaryKey": {"name": "event_log_pkey", "columns": ["id"]}
+    },
+    {
+      "schema": "audit",
+      "name": "retention_policy",
+      "columns": [
+        {"name": "id", "ordinal": 1, "dataType": "integer", "nullable": false},
+        {"name": "parent_id", "ordinal": 2, "dataType": "integer", "nullable": true}
+      ],
+      "primaryKey": {"name": "retention_policy_pkey", "columns": ["id"]},
+      "foreignKeys": [
+        {"name": "retention_policy_parent_id_fkey", "columns": ["parent_id"], "refSchema": "audit", "refTable": "retention_policy", "refColumns": ["id"], "onDelete": "NO ACTION", "onUpdate": "NO ACTION"}
+      ]
+    }
+  ]
+}

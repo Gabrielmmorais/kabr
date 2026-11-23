@@ -1,0 +1,42 @@
+# Local demo database for Kabr: PostgreSQL 17 + the Pagila sample database.
+# LOCAL DEMO ONLY. Do not expose this port.
+#
+#   make demo-up     # generate .env.demo, fetch Pagila, start, wait until healthy
+#   make demo-down   # stop, delete the volume and .env.demo
+#
+# No password is committed: `make demo-secrets` (run by demo-up) writes random
+# POSTGRES_PASSWORD, KABR_READER_PASSWORD and KABR_UNSAFE_PASSWORD into
+# .env.demo next to this file (gitignored, mode 600).
+name: kabr-demo
+
+services:
+  postgres:
+    image: postgres:17.12-alpine
+    restart: "no"
+    # Resolved relative to this file. Not required, so that `make demo-down`
+    # still works after the file is gone; without it the image refuses to
+    # start (no POSTGRES_PASSWORD), which is the intended failure.
+    env_file:
+      - path: .env.demo
+        required: false
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: pagila
+    ports:
+      # 55432 on the host avoids clashing with a local PostgreSQL on 5432.
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Scripts run once, in lexical order (10-*, 20-*), on an empty volume.
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+      # Pagila files downloaded by scripts/fetch-pagila.sh (gitignored).
+      - ./data:/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pagila -h 127.0.0.1"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+      start_period: 60s
+
+volumes:
+  pgdata:
