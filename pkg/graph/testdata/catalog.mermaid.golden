@@ -1,0 +1,57 @@
+erDiagram
+    audit__event_log {
+        bigint id PK
+        jsonb payload
+        timestamp created_at
+    }
+    audit__retention_policy {
+        integer id PK
+        integer parent_id FK
+    }
+    public__assignment {
+        integer employee_id PK, FK
+        integer project_id PK, FK
+        varchar_30_ role
+    }
+    public__department {
+        integer id PK
+        varchar_45_ name
+    }
+    public__employee {
+        integer id PK
+        varchar_120_ full_name "Display name, 'as printed'"
+        text email UK
+        integer department_id FK
+        integer manager_id FK "Direct manager; NULL for the CEO"
+        timestamptz hired_at
+        text_array skills
+    }
+    public__employee_badge {
+        integer employee_id PK, FK
+        char_8_ badge_code
+    }
+    public__project {
+        integer id PK
+        text title
+        integer department_id FK
+        integer owner_id FK
+        integer reviewer_id FK
+        numeric_12_2_ budget
+    }
+    public__timesheet {
+        bigint id PK
+        integer employee_id FK
+        integer project_id FK
+        date work_day
+        float8 hours
+    }
+    audit__retention_policy |o--o{ audit__retention_policy : "retention_policy_parent_id_fkey"
+    public__employee ||--o{ public__assignment : "assignment_employee_id_fkey"
+    public__project ||--o{ public__assignment : "assignment_project_id_fkey"
+    public__department ||--o{ public__employee : "employee_department_id_fkey"
+    public__employee |o--o{ public__employee : "employee_manager_id_fkey"
+    public__employee ||--o| public__employee_badge : "employee_badge_employee_id_fkey"
+    public__department |o--o{ public__project : "project_department_id_fkey"
+    public__employee ||--o{ public__project : "project_owner_id_fkey"
+    public__employee |o--o{ public__project : "project_reviewer_id_fkey"
+    public__assignment ||--o{ public__timesheet : "timesheet_assignment_fkey"

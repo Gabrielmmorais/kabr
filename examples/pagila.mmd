@@ -1,0 +1,136 @@
+erDiagram
+    actor {
+        integer actor_id PK
+        text first_name
+        text last_name
+        timestamptz last_update
+    }
+    address {
+        integer address_id PK
+        text address
+        text address2
+        text district
+        integer city_id FK
+        text postal_code
+        text phone
+        timestamptz last_update
+    }
+    category {
+        integer category_id PK
+        text name
+        timestamptz last_update
+    }
+    city {
+        integer city_id PK
+        text city
+        integer country_id FK
+        timestamptz last_update
+    }
+    country {
+        integer country_id PK
+        text country
+        timestamptz last_update
+    }
+    customer {
+        integer customer_id PK
+        integer store_id FK
+        text first_name
+        text last_name
+        text email
+        integer address_id FK
+        boolean activebool
+        date create_date
+        timestamptz last_update
+        integer active
+    }
+    film {
+        integer film_id PK
+        text title
+        text description
+        year release_year
+        integer language_id FK
+        integer original_language_id FK
+        smallint rental_duration
+        numeric_4_2_ rental_rate
+        smallint length
+        numeric_5_2_ replacement_cost
+        mpaa_rating rating
+        timestamptz last_update
+        text_array special_features
+        tsvector fulltext
+    }
+    film_actor {
+        integer actor_id PK, FK
+        integer film_id PK, FK
+        timestamptz last_update
+    }
+    film_category {
+        integer film_id PK, FK
+        integer category_id PK, FK
+        timestamptz last_update
+    }
+    inventory {
+        integer inventory_id PK
+        integer film_id FK
+        integer store_id FK
+        timestamptz last_update
+    }
+    language {
+        integer language_id PK
+        char_20_ name
+        timestamptz last_update
+    }
+    payment {
+        integer payment_id PK
+        integer customer_id
+        integer staff_id
+        integer rental_id
+        numeric_5_2_ amount
+        timestamptz payment_date PK
+    }
+    rental {
+        integer rental_id PK
+        timestamptz rental_date
+        integer inventory_id FK
+        integer customer_id FK
+        timestamptz return_date
+        integer staff_id FK
+        timestamptz last_update
+    }
+    staff {
+        integer staff_id PK
+        text first_name
+        text last_name
+        integer address_id FK
+        text email
+        integer store_id FK
+        boolean active
+        text username
+        text password
+        timestamptz last_update
+        bytea picture
+    }
+    store {
+        integer store_id PK
+        integer manager_staff_id UK
+        integer address_id FK
+        timestamptz last_update
+    }
+    city ||--o{ address : "address_city_id_fkey"
+    country ||--o{ city : "city_country_id_fkey"
+    address ||--o{ customer : "customer_address_id_fkey"
+    store ||--o{ customer : "customer_store_id_fkey"
+    language ||--o{ film : "film_language_id_fkey"
+    language |o--o{ film : "film_original_language_id_fkey"
+    actor ||--o{ film_actor : "film_actor_actor_id_fkey"
+    film ||--o{ film_actor : "film_actor_film_id_fkey"
+    category ||--o{ film_category : "film_category_category_id_fkey"
+    film ||--o{ film_category : "film_category_film_id_fkey"
+    film ||--o{ inventory : "inventory_film_id_fkey"
+    store ||--o{ inventory : "inventory_store_id_fkey"
+    customer ||--o{ rental : "rental_customer_id_fkey"
+    inventory ||--o{ rental : "rental_inventory_id_fkey"
+    staff ||--o{ rental : "rental_staff_id_fkey"
+    address ||--o{ staff : "staff_address_id_fkey"
+    store ||--o{ staff : "staff_store_id_fkey"
+    address ||--o{ store : "store_address_id_fkey"

@@ -1,0 +1,37 @@
+digraph kabr {
+    rankdir=LR;
+    node [shape=box];
+    "public.actor" [label="public.actor"];
+    "public.address" [label="public.address"];
+    "public.category" [label="public.category"];
+    "public.city" [label="public.city"];
+    "public.country" [label="public.country"];
+    "public.customer" [label="public.customer"];
+    "public.film" [label="public.film"];
+    "public.film_actor" [label="public.film_actor"];
+    "public.film_category" [label="public.film_category"];
+    "public.inventory" [label="public.inventory"];
+    "public.language" [label="public.language"];
+    "public.payment" [label="public.payment"];
+    "public.rental" [label="public.rental"];
+    "public.staff" [label="public.staff"];
+    "public.store" [label="public.store"];
+    "public.address" -> "public.city" [label="address_city_id_fkey"];
+    "public.city" -> "public.country" [label="city_country_id_fkey"];
+    "public.customer" -> "public.address" [label="customer_address_id_fkey"];
+    "public.customer" -> "public.store" [label="customer_store_id_fkey"];
+    "public.film" -> "public.language" [label="film_language_id_fkey"];
+    "public.film" -> "public.language" [label="film_original_language_id_fkey"];
+    "public.film_actor" -> "public.actor" [label="film_actor_actor_id_fkey"];
+    "public.film_actor" -> "public.film" [label="film_actor_film_id_fkey"];
+    "public.film_category" -> "public.category" [label="film_category_category_id_fkey"];
+    "public.film_category" -> "public.film" [label="film_category_film_id_fkey"];
+    "public.inventory" -> "public.film" [label="inventory_film_id_fkey"];
+    "public.inventory" -> "public.store" [label="inventory_store_id_fkey"];
+    "public.rental" -> "public.customer" [label="rental_customer_id_fkey"];
+    "public.rental" -> "public.inventory" [label="rental_inventory_id_fkey"];
+    "public.rental" -> "public.staff" [label="rental_staff_id_fkey"];
+    "public.staff" -> "public.address" [label="staff_address_id_fkey"];
+    "public.staff" -> "public.store" [label="staff_store_id_fkey"];
+    "public.store" -> "public.address" [label="store_address_id_fkey"];
+}

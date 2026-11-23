@@ -1,0 +1,513 @@
+{
+  "schemaVersion": "kabr.dev/v1alpha1",
+  "dialect": "postgres",
+  "database": "kabr_fixture",
+  "schemas": [
+    "public",
+    "sales"
+  ],
+  "tables": [
+    {
+      "schema": "public",
+      "name": "café",
+      "columns": [
+        {
+          "name": "código",
+          "ordinal": 1,
+          "dataType": "\"bıgınt\"",
+          "nullable": false
+        },
+        {
+          "name": "preço",
+          "ordinal": 2,
+          "dataType": "numeric(8,2)",
+          "nullable": true,
+          "comment": "Preço em reais"
+        }
+      ],
+      "primaryKey": {
+        "name": "café_pkey",
+        "columns": [
+          "código"
+        ]
+      },
+      "indexes": [
+        {
+          "name": "café_pkey",
+          "columns": [
+            "código"
+          ],
+          "unique": true,
+          "primary": true,
+          "method": "btree"
+        }
+      ]
+    },
+    {
+      "schema": "public",
+      "name": "customer",
+      "comment": "People who place orders",
+      "columns": [
+        {
+          "name": "id",
+          "ordinal": 1,
+          "dataType": "integer",
+          "nullable": false,
+          "default": "nextval('customer_id_seq'::regclass)"
+        },
+        {
+          "name": "email",
+          "ordinal": 2,
+          "dataType": "text",
+          "nullable": false,
+          "comment": "Login e-mail, unique"
+        },
+        {
+          "name": "name",
+          "ordinal": 3,
+          "dataType": "character varying(80)",
+          "nullable": false
+        },
+        {
+          "name": "created_at",
+          "ordinal": 4,
+          "dataType": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()"
+        }
+      ],
+      "primaryKey": {
+        "name": "customer_pkey",
+        "columns": [
+          "id"
+        ]
+      },
+      "indexes": [
+        {
+          "name": "customer_email_key",
+          "columns": [
+            "email"
+          ],
+          "unique": true,
+          "method": "btree"
+        },
+        {
+          "name": "customer_lower_email_idx",
+          "columns": [
+            "lower(email)"
+          ],
+          "method": "btree"
+        },
+        {
+          "name": "customer_name_created_idx",
+          "columns": [
+            "name",
+            "created_at"
+          ],
+          "method": "btree"
+        },
+        {
+          "name": "customer_pkey",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "primary": true,
+          "method": "btree"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "name": "customer_email_key",
+          "columns": [
+            "email"
+          ]
+        }
+      ],
+      "stats": {
+        "estimatedRows": 4
+      }
+    },
+    {
+      "schema": "public",
+      "name": "employee",
+      "columns": [
+        {
+          "name": "id",
+          "ordinal": 1,
+          "dataType": "integer",
+          "nullable": false
+        },
+        {
+          "name": "manager_id",
+          "ordinal": 2,
+          "dataType": "integer",
+          "nullable": true
+        },
+        {
+          "name": "full_name",
+          "ordinal": 3,
+          "dataType": "text",
+          "nullable": false
+        }
+      ],
+      "primaryKey": {
+        "name": "employee_pkey",
+        "columns": [
+          "id"
+        ]
+      },
+      "foreignKeys": [
+        {
+          "name": "employee_manager_id_fkey",
+          "columns": [
+            "manager_id"
+          ],
+          "refSchema": "public",
+          "refTable": "employee",
+          "refColumns": [
+            "id"
+          ],
+          "onDelete": "SET NULL",
+          "onUpdate": "NO ACTION"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "employee_pkey",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "primary": true,
+          "method": "btree"
+        }
+      ],
+      "stats": {
+        "estimatedRows": 3
+      }
+    },
+    {
+      "schema": "public",
+      "name": "measurement",
+      "comment": "Partitioned by month",
+      "columns": [
+        {
+          "name": "city_id",
+          "ordinal": 1,
+          "dataType": "integer",
+          "nullable": false
+        },
+        {
+          "name": "logdate",
+          "ordinal": 2,
+          "dataType": "date",
+          "nullable": false
+        },
+        {
+          "name": "reading",
+          "ordinal": 3,
+          "dataType": "numeric(6,2)",
+          "nullable": true
+        }
+      ],
+      "primaryKey": {
+        "name": "measurement_pkey",
+        "columns": [
+          "city_id",
+          "logdate"
+        ]
+      },
+      "indexes": [
+        {
+          "name": "measurement_pkey",
+          "columns": [
+            "city_id",
+            "logdate"
+          ],
+          "unique": true,
+          "primary": true,
+          "method": "btree"
+        }
+      ]
+    },
+    {
+      "schema": "public",
+      "name": "measurement_note",
+      "columns": [
+        {
+          "name": "id",
+          "ordinal": 1,
+          "dataType": "integer",
+          "nullable": false
+        },
+        {
+          "name": "city_id",
+          "ordinal": 2,
+          "dataType": "integer",
+          "nullable": false
+        },
+        {
+          "name": "logdate",
+          "ordinal": 3,
+          "dataType": "date",
+          "nullable": false
+        },
+        {
+          "name": "note",
+          "ordinal": 4,
+          "dataType": "text",
+          "nullable": true
+        }
+      ],
+      "primaryKey": {
+        "name": "measurement_note_pkey",
+        "columns": [
+          "id"
+        ]
+      },
+      "foreignKeys": [
+        {
+          "name": "measurement_note_city_id_logdate_fkey",
+          "columns": [
+            "city_id",
+            "logdate"
+          ],
+          "refSchema": "public",
+          "refTable": "measurement",
+          "refColumns": [
+            "city_id",
+            "logdate"
+          ],
+          "onDelete": "NO ACTION",
+          "onUpdate": "NO ACTION"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "measurement_note_pkey",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "primary": true,
+          "method": "btree"
+        }
+      ]
+    },
+    {
+      "schema": "public",
+      "name": "order_line",
+      "columns": [
+        {
+          "name": "line_no",
+          "ordinal": 1,
+          "dataType": "integer",
+          "nullable": false
+        },
+        {
+          "name": "order_no",
+          "ordinal": 2,
+          "dataType": "integer",
+          "nullable": false
+        },
+        {
+          "name": "region",
+          "ordinal": 3,
+          "dataType": "character(2)",
+          "nullable": false
+        },
+        {
+          "name": "product_code",
+          "ordinal": 4,
+          "dataType": "text",
+          "nullable": true,
+          "default": "'UNKNOWN'::text"
+        },
+        {
+          "name": "qty",
+          "ordinal": 5,
+          "dataType": "integer",
+          "nullable": false
+        }
+      ],
+      "primaryKey": {
+        "name": "order_line_pkey",
+        "columns": [
+          "region",
+          "order_no",
+          "line_no"
+        ]
+      },
+      "foreignKeys": [
+        {
+          "name": "order_line_order_fk",
+          "columns": [
+            "region",
+            "order_no"
+          ],
+          "refSchema": "public",
+          "refTable": "orders",
+          "refColumns": [
+            "region",
+            "order_no"
+          ],
+          "onDelete": "RESTRICT",
+          "onUpdate": "CASCADE"
+        },
+        {
+          "name": "order_line_product_code_fkey",
+          "columns": [
+            "product_code"
+          ],
+          "refSchema": "sales",
+          "refTable": "product",
+          "refColumns": [
+            "code"
+          ],
+          "onDelete": "SET DEFAULT",
+          "onUpdate": "CASCADE"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "order_line_pkey",
+          "columns": [
+            "region",
+            "order_no",
+            "line_no"
+          ],
+          "unique": true,
+          "primary": true,
+          "method": "btree"
+        }
+      ]
+    },
+    {
+      "schema": "public",
+      "name": "orders",
+      "columns": [
+        {
+          "name": "region",
+          "ordinal": 1,
+          "dataType": "character(2)",
+          "nullable": false
+        },
+        {
+          "name": "order_no",
+          "ordinal": 2,
+          "dataType": "integer",
+          "nullable": false
+        },
+        {
+          "name": "customer_id",
+          "ordinal": 3,
+          "dataType": "integer",
+          "nullable": false
+        },
+        {
+          "name": "status",
+          "ordinal": 4,
+          "dataType": "text",
+          "nullable": false,
+          "default": "'new'::text"
+        }
+      ],
+      "primaryKey": {
+        "name": "orders_pkey",
+        "columns": [
+          "region",
+          "order_no"
+        ]
+      },
+      "foreignKeys": [
+        {
+          "name": "orders_customer_id_fkey",
+          "columns": [
+            "customer_id"
+          ],
+          "refSchema": "public",
+          "refTable": "customer",
+          "refColumns": [
+            "id"
+          ],
+          "onDelete": "CASCADE",
+          "onUpdate": "NO ACTION"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "orders_pkey",
+          "columns": [
+            "region",
+            "order_no"
+          ],
+          "unique": true,
+          "primary": true,
+          "method": "btree"
+        }
+      ]
+    },
+    {
+      "schema": "public",
+      "name": "orphan_log",
+      "columns": [
+        {
+          "name": "logged_at",
+          "ordinal": 1,
+          "dataType": "timestamp with time zone",
+          "nullable": true
+        },
+        {
+          "name": "message",
+          "ordinal": 2,
+          "dataType": "text",
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "schema": "sales",
+      "name": "product",
+      "comment": "Product catalog",
+      "columns": [
+        {
+          "name": "code",
+          "ordinal": 1,
+          "dataType": "text",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "ordinal": 2,
+          "dataType": "text",
+          "nullable": false
+        },
+        {
+          "name": "price",
+          "ordinal": 3,
+          "dataType": "numeric(10,2)",
+          "nullable": false,
+          "default": "0"
+        }
+      ],
+      "primaryKey": {
+        "name": "product_pkey",
+        "columns": [
+          "code"
+        ]
+      },
+      "indexes": [
+        {
+          "name": "product_pkey",
+          "columns": [
+            "code"
+          ],
+          "unique": true,
+          "primary": true,
+          "method": "btree"
+        }
+      ]
+    }
+  ]
+}
