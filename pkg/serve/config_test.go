@@ -3,6 +3,7 @@ package serve
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -209,16 +210,33 @@ func TestConfigFromPlan(t *testing.T) {
 	}
 	proposed := approvedPlan(t)
 	proposed.Status.Phase = plan.PhaseProposed
-	if _, err := ConfigFromPlan(proposed, "sales"); err == nil || !strings.Contains(err.Error(), "not approved") {
+	if _, err := ConfigFromPlan(proposed, "sales"); !errors.Is(err, plan.ErrNotApproved) {
 		t.Errorf("proposed plan: %v", err)
 	}
 	unset := approvedPlan(t)
 	unset.Status = plan.Status{}
-	if _, err := ConfigFromPlan(unset, "sales"); err == nil || !strings.Contains(err.Error(), "phase unset") {
-		t.Errorf("plan without phase: %v", err)
+	if _, err := ConfigFromPlan(unset, "sales"); !errors.Is(err, plan.ErrNotApproved) {
+		t.Errorf("plan without status: %v", err)
 	}
+	noDigest := approvedPlan(t)
+	noDigest.Status.ApprovalDigest = ""
+	if _, err := ConfigFromPlan(noDigest, "sales"); !errors.Is(err, plan.ErrApprovalDigestMissing) {
+		t.Errorf("plan without approval digest: %v", err)
+	}
+	edited := approvedPlan(t)
+	edited.Spec.Domains[0].SensitiveColumns = nil
+	if _, err := ConfigFromPlan(edited, "sales"); !errors.Is(err, plan.ErrEditedAfterApproval) {
+		t.Errorf("plan edited after approval: %v", err)
+	}
+	forged := approvedPlan(t)
+	forged.Status.ApprovalDigest = "sha256:" + strings.Repeat("0", 64)
+	if _, err := ConfigFromPlan(forged, "sales"); !errors.Is(err, plan.ErrEditedAfterApproval) {
+		t.Errorf("plan with a wrong digest: %v", err)
+	}
+	// A structural problem that the approval does not catch: an invalid
+	// name (metadata is outside the digest).
 	broken := approvedPlan(t)
-	broken.Spec.Source.CatalogFingerprint = "nope"
+	broken.Metadata.Name = "Not_A_DNS_Name"
 	if _, err := ConfigFromPlan(broken, "sales"); err == nil || !strings.Contains(err.Error(), "invalid") {
 		t.Errorf("invalid plan: %v", err)
 	}

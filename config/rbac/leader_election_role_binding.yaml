@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kabr-operator-leader-election
+  namespace: kabr-system
+  labels:
+    app.kubernetes.io/name: kabr-operator
+    app.kubernetes.io/managed-by: kustomize
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kabr-operator-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: kabr-operator
+    namespace: kabr-system

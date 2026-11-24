@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - manager.yaml
+# Default image of the DomainAPI pods (KABR_RUNTIME_IMAGE of the operator).
+# Keep it equal to the operator image; an overlay replaces it with
+# configMapGenerator behavior: replace (see manager.yaml).
+configMapGenerator:
+  - name: kabr-operator-config
+    namespace: kabr-system
+    literals:
+      - runtimeImage=kabr:latest

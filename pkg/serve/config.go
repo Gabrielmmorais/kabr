@@ -370,22 +370,22 @@ func walkToken(dec *json.Decoder, tok json.Token, path string, objKeys, itemKeys
 }
 
 // ConfigFromPlan builds the [Config] of one domain of an approved plan. It
-// refuses a plan that is not in phase Approved, that fails
+// refuses a plan whose approval does not verify ([plan.VerifyApproval]: not
+// approved, approved before digests existed, or edited after approval; the
+// error wraps the matching plan sentinel), that fails
 // [plan.DomainPlan.ValidateStructure], or that has no such domain. Schemas
 // are the schemas of every table of the plan (the fingerprint covers the
 // whole catalog); RowLimit and StatementTimeout are set to their defaults.
+//
+// The approval digest is an integrity check, not authentication: whoever
+// can write the plan can also recompute the digest. Who may approve is
+// decided by access control on the plan (file review, Kubernetes RBAC).
 func ConfigFromPlan(p *plan.DomainPlan, domain string) (*Config, error) {
 	if p == nil {
 		return nil, errors.New("serve: plan is nil")
 	}
-	// TODO(m3): use plan.VerifyApproval (approval digest check) once it lands.
-	if p.Status.Phase != plan.PhaseApproved {
-		phase := string(p.Status.Phase)
-		if phase == "" {
-			phase = "unset"
-		}
-		return nil, fmt.Errorf("serve: plan %q is not approved (phase %s); approve it with \"kabr plan approve\"",
-			p.Metadata.Name, phase)
+	if err := plan.VerifyApproval(p); err != nil {
+		return nil, fmt.Errorf("serve: %w", err)
 	}
 	if err := p.ValidateStructure(); err != nil {
 		return nil, fmt.Errorf("serve: plan %q is invalid: %w", p.Metadata.Name, err)

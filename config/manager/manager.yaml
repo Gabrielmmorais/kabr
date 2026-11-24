@@ -1,0 +1,88 @@
+# The Kabr operator. The image "kabr:latest" is a placeholder: overlays set
+# the real image with kustomize "images:" (name: kabr). KABR_RUNTIME_IMAGE,
+# the default image of the DomainAPI pods, comes from the ConfigMap
+# kabr-operator-config (key runtimeImage), generated in kustomization.yaml;
+# an overlay overrides both, for example:
+#
+#   images:
+#     - name: kabr
+#       newName: registry.example.com/kabr
+#       newTag: v0.3.0
+#   configMapGenerator:
+#     - name: kabr-operator-config
+#       behavior: replace
+#       literals:
+#         - runtimeImage=registry.example.com/kabr:v0.3.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kabr-operator
+  namespace: kabr-system
+  labels:
+    app.kubernetes.io/name: kabr-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kabr-operator
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kabr-operator
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: kabr-operator
+      automountServiceAccountToken: true # the operator talks to the API server
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: kabr:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - operator
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+          env:
+            - name: KABR_RUNTIME_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: kabr-operator-config
+                  key: runtimeImage
+          ports:
+            - name: probes
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

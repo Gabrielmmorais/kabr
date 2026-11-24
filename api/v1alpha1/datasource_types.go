@@ -91,6 +91,7 @@ type DataSourceNetwork struct {
 	// +kubebuilder:validation:MaxItems=64
 	// +kubebuilder:validation:items:MaxLength=49
 	// +kubebuilder:validation:XValidation:rule="self.all(c, isCIDR(c))",message="every entry must be a valid CIDR"
+	// +kubebuilder:validation:XValidation:rule="self.all(c, !isCIDR(c) || cidr(c).prefixLength() > 0)",message="a /0 CIDR allows every address; name the database's address blocks"
 	CIDRs []string `json:"cidrs,omitempty"`
 
 	// PodSelector selects the database pods (for a database inside the

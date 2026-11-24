@@ -246,6 +246,11 @@ func (in *DomainAPISpec) DeepCopyInto(out *DomainAPISpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.Schemas != nil {
+		in, out := &in.Schemas, &out.Schemas
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.SensitiveColumns != nil {
 		in, out := &in.SensitiveColumns, &out.SensitiveColumns
 		*out = make([]plan.SensitiveColumn, len(*in))

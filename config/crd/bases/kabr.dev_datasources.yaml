@@ -106,6 +106,9 @@ spec:
                     x-kubernetes-validations:
                     - message: every entry must be a valid CIDR
                       rule: self.all(c, isCIDR(c))
+                    - message: a /0 CIDR allows every address; name the database's
+                        address blocks
+                      rule: self.all(c, !isCIDR(c) || cidr(c).prefixLength() > 0)
                   namespaceSelector:
                     description: |-
                       NamespaceSelector narrows PodSelector to pods in the matching

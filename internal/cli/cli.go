@@ -115,10 +115,13 @@ Usage:
 Commands:
   introspect   Read the catalog of a database (read-only) and export it
                as canonical JSON, a Mermaid ER diagram or Graphviz DOT
-  plan         Generate, show, validate, approve and evaluate a domain
-               plan (subcommands: generate, show, validate, approve, eval)
+  plan         Generate, show, validate, approve, evaluate and export a
+               domain plan (subcommands: generate, show, validate, approve,
+               eval, manifest)
   serve        Serve one domain of an approved plan as a read-only REST
                API with OpenAPI, row limits and column masking
+  operator     Run the Kubernetes operator that serves approved DomainPlans
+               (kabr.dev/v1alpha1) as per-domain APIs
   version      Print the kabr version
   help         Show help for kabr or for a command
 
@@ -147,6 +150,8 @@ func Run(ctx context.Context, args []string, env Env) int {
 		err = runPlan(ctx, rest, &env)
 	case "serve":
 		err = runServe(ctx, rest, &env)
+	case "operator":
+		err = runOperator(ctx, rest, &env)
 	case "version", "--version", "-version":
 		if len(rest) > 0 {
 			err = usageErr("version takes no arguments")
@@ -173,6 +178,9 @@ func runHelp(args []string, env *Env) error {
 	case len(args) == 1 && args[0] == "serve":
 		fs, _ := newServeFlags()
 		printServeUsage(env.Stdout, fs)
+	case len(args) == 1 && args[0] == "operator":
+		fs, _ := newOperatorFlags(env.Getenv)
+		printOperatorUsage(env.Stdout, fs)
 	case len(args) == 1 && args[0] == "version":
 		fmt.Fprintln(env.Stdout, "Usage: kabr version\n\nPrint the kabr version.")
 	case len(args) == 1 && args[0] == "help":

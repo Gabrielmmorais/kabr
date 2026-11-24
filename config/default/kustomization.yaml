@@ -1,0 +1,12 @@
+# Everything the Kabr operator needs: CRDs, RBAC and the operator Deployment
+# in namespace kabr-system. Overlays (for example a kind overlay) use this
+# directory as a resource and set the image (kustomize "images:", name kabr)
+# and the runtime image (configMapGenerator kabr-operator-config, key
+# runtimeImage, behavior: replace).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kabr-system
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager

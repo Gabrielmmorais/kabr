@@ -91,10 +91,6 @@ spec:
                 maxLength: 63
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                 type: string
-              image:
-                description: Image overrides the container image of the API server.
-                maxLength: 512
-                type: string
               planRef:
                 description: PlanRef names the DomainPlan (same namespace) the domain
                   comes from.
@@ -126,6 +122,19 @@ spec:
                 maximum: 1000
                 minimum: 1
                 type: integer
+              schemas:
+                description: |-
+                  Schemas are the sorted, unique schemas of ALL tables of the plan, not
+                  only of this domain: the runtime introspects them to recompute the
+                  catalog fingerprint, which covers the whole catalog the plan was
+                  approved for.
+                items:
+                  maxLength: 63
+                  minLength: 1
+                  type: string
+                maxItems: 256
+                type: array
+                x-kubernetes-list-type: set
               sensitiveColumns:
                 description: |-
                   SensitiveColumns are the columns of these tables that must not be

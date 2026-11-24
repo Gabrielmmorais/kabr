@@ -37,6 +37,17 @@ type DomainAPISpec struct {
 	// +kubebuilder:validation:items:Pattern=`^[^.]*\S[^.]*\..*\S.*$`
 	Tables []string `json:"tables"`
 
+	// Schemas are the sorted, unique schemas of ALL tables of the plan, not
+	// only of this domain: the runtime introspects them to recompute the
+	// catalog fingerprint, which covers the whole catalog the plan was
+	// approved for.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=256
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=63
+	Schemas []string `json:"schemas,omitempty"`
+
 	// SensitiveColumns are the columns of these tables that must not be
 	// exposed verbatim, with the action to apply (mask, drop or hash).
 	// +optional
@@ -58,10 +69,10 @@ type DomainAPISpec struct {
 	// +kubebuilder:validation:Maximum=10
 	Replicas int32 `json:"replicas"`
 
-	// Image overrides the container image of the API server.
-	// +optional
-	// +kubebuilder:validation:MaxLength=512
-	Image string `json:"image,omitempty"`
+	// There is deliberately no image field: the API pods always run the
+	// operator's runtime image (--runtime-image / KABR_RUNTIME_IMAGE), so
+	// whoever can edit a DomainAPI cannot run their own image with the DSN
+	// Secret mounted.
 }
 
 // DomainAPIStatus is the observed state of a DomainAPI.
