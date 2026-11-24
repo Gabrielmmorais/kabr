@@ -1,0 +1,188 @@
+apiVersion: kabr.dev/v1alpha1
+kind: DomainPlan
+metadata:
+  name: pagila
+spec:
+  domains:
+  - description: Tables grouped around city by foreign-key structure.
+    name: city
+    rationale: 'graph community anchored at public.city: 2 tables, 1 internal link
+      (0 inferred), 1 link to other domains (0 inferred); modularity contribution
+      0.0444'
+    tables:
+    - name: public.city
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.country (weight 1)'
+      role: core
+    - name: public.country
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.city (weight 1)'
+      role: core
+  - description: Tables grouped around film by foreign-key structure.
+    name: film
+    rationale: 'graph community anchored at public.film: 7 tables, 7 internal links
+      (0 inferred), 2 links to other domains (0 inferred); modularity contribution
+      0.1900'
+    sensitiveColumns:
+    - action: mask
+      class: pii
+      column: first_name
+      rationale: name tokens "first_name" ⇒ pii; action mask
+      source: heuristic
+      table: public.actor
+    - action: mask
+      class: pii
+      column: last_name
+      rationale: name tokens "last_name" ⇒ pii; action mask
+      source: heuristic
+      table: public.actor
+    tables:
+    - name: public.actor
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.film (weight 1, through a junction table)'
+      role: core
+    - name: public.category
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.film (weight 1, through a junction table)'
+      role: core
+    - name: public.film
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.actor (weight 1, through a junction table)'
+      role: core
+    - name: public.film_actor
+      rationale: 'junction: composite primary key (actor_id, film_id) references public.actor
+        and public.film; placed with owner public.film (highest weighted degree 5)'
+      role: junction
+    - name: public.film_category
+      rationale: 'junction: composite primary key (film_id, category_id) references
+        public.category and public.film; placed with owner public.film (highest weighted
+        degree 5)'
+      role: junction
+    - name: public.inventory
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.film (weight 1)'
+      role: core
+    - name: public.language
+      rationale: 'lookup: 3 columns, no outgoing reference, 2 incoming references
+        from public.film (2); placed with its strongest neighbor public.film'
+      role: lookup
+  - description: Tables grouped around store by foreign-key structure.
+    name: store
+    rationale: 'graph community anchored at public.store: 6 tables, 11 internal links
+      (4 inferred), 3 links to other domains (0 inferred); modularity contribution
+      0.1744'
+    sensitiveColumns:
+    - action: mask
+      class: pii
+      column: address
+      rationale: column named "address" ⇒ pii; action mask
+      source: heuristic
+      table: public.address
+    - action: mask
+      class: pii
+      column: address2
+      rationale: column named "address2" ⇒ pii; action mask
+      source: heuristic
+      table: public.address
+    - action: mask
+      class: pii
+      column: phone
+      rationale: name token "phone" ⇒ pii; action mask
+      source: heuristic
+      table: public.address
+    - action: mask
+      class: pii
+      column: postal_code
+      rationale: name tokens "postal_code" ⇒ pii; action mask
+      source: heuristic
+      table: public.address
+    - action: mask
+      class: pii
+      column: email
+      rationale: name token "email" ⇒ pii; action mask
+      source: heuristic
+      table: public.customer
+    - action: mask
+      class: pii
+      column: first_name
+      rationale: name tokens "first_name" ⇒ pii; action mask
+      source: heuristic
+      table: public.customer
+    - action: mask
+      class: pii
+      column: last_name
+      rationale: name tokens "last_name" ⇒ pii; action mask
+      source: heuristic
+      table: public.customer
+    - action: mask
+      class: financial
+      column: amount
+      rationale: name token "amount" ⇒ financial; action mask
+      source: heuristic
+      table: public.payment
+    - action: mask
+      class: pii
+      column: email
+      rationale: name token "email" ⇒ pii; action mask
+      source: heuristic
+      table: public.staff
+    - action: mask
+      class: pii
+      column: first_name
+      rationale: name tokens "first_name" ⇒ pii; action mask
+      source: heuristic
+      table: public.staff
+    - action: mask
+      class: pii
+      column: last_name
+      rationale: name tokens "last_name" ⇒ pii; action mask
+      source: heuristic
+      table: public.staff
+    - action: drop
+      class: credential
+      column: password
+      rationale: name token "password" ⇒ credential; action drop
+      source: heuristic
+      table: public.staff
+    - action: hash
+      class: credential
+      column: username
+      rationale: name token "username" ⇒ credential; action hash
+      source: heuristic
+      table: public.staff
+    tables:
+    - name: public.address
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.customer (weight 1)'
+      role: core
+    - name: public.customer
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.address (weight 1)'
+      role: core
+    - name: public.payment
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.customer (weight 0.5); inferred references: customer_id→public.customer,
+        rental_id→public.rental, staff_id→public.staff'
+      role: core
+    - name: public.rental
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.customer (weight 1)'
+      role: core
+    - name: public.staff
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.store (weight 1.5)'
+      role: core
+    - name: public.store
+      rationale: 'core: grouped by modularity clustering; strongest in-domain link
+        public.staff (weight 1.5); inferred references: manager_staff_id→public.staff'
+      role: core
+  source:
+    catalogFingerprint: sha256:8123ea29fda506ae9a93671eff5aedaee0a60aa4ae6c7bf52d723c04fc801669
+    database: pagila
+    dialect: postgres
+    schemaVersion: kabr.dev/v1alpha1
+status:
+  generator:
+    mode: graph
+    modularity: 0.4087
+  phase: Proposed

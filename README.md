@@ -8,9 +8,11 @@
 it into domains, a Kubernetes operator ships one governed REST + MCP API per
 domain.**
 
-> **Status: early development.** Milestone M1 (read-only catalog
-> introspection and the table graph) is implemented and tested. Everything
-> after it is design and roadmap; this README marks which is which.
+> **Status: early development.** Milestones M1 (read-only catalog
+> introspection and the table graph) and M2 (segmentation into a reviewable
+> `DomainPlan`, optional LLM refinement, human approval) are implemented and
+> tested. Everything after them is design and roadmap; this README marks
+> which is which.
 
 ## Why
 
@@ -34,10 +36,10 @@ approve them, and expose each domain through a narrow, read-only, audited API
 | Stage | What it does | Status |
 |-------|--------------|--------|
 | **1. Connect** | Read-only, catalog-only introspection: tables, columns, keys, foreign keys, indexes, comments, planner estimates. A least-privilege check warns about (or refuses) over-privileged credentials. | ✅ Implemented (M1) |
-| **2. Segment** | Build the foreign-key graph, run community detection, let an LLM refine and name the domains and flag sensitive columns. Output: a `DomainPlan` CRD that a human approves. | 🗺️ Planned (M2) |
+| **2. Segment** | Build the foreign-key graph, run deterministic community detection, optionally let an LLM refine and name the domains and flag sensitive columns. Output: a `DomainPlan` that a human approves. | ✅ Implemented (M2) |
 | **3. Generate** | A Go operator turns an approved plan into one `DomainAPI` per domain: REST/OpenAPI + MCP from a generic runtime, column masking, row limits, table/column allowlist, HPA/KEDA, NetworkPolicy, Gateway API route. | 🗺️ Planned (M3-M4) |
 | **4. Govern** | Per-query audit with OpenTelemetry, per-consumer quotas. | 🗺️ Planned (M4) |
-| **5. Evaluate** | Segmentation evals in CI against Pagila, Chinook, Northwind and AdventureWorks with hand-labeled domains. | 🗺️ Planned (M5) |
+| **5. Evaluate** | Segmentation evals in CI against Pagila, Chinook, Northwind and AdventureWorks with hand-labeled domains. | 🟡 Pagila gate in tests (M2); more datasets planned (M5) |
 
 ```mermaid
 flowchart LR
@@ -116,8 +118,8 @@ output or error message.
 | Exit code | Meaning |
 |-----------|---------|
 | `0` | Success (warnings may still have been printed). |
-| `1` | Error: connection, query, output or interruption (Ctrl-C). |
-| `2` | Invalid usage (unknown flag, missing DSN, bad value). |
+| `1` | Error: connection, query, output or interruption (Ctrl-C). For `kabr plan`, also an invalid plan, a refused approval or an eval table-coverage mismatch. |
+| `2` | Invalid usage (unknown flag, missing DSN or catalog, bad value). |
 | `3` | `--strict` refused a role with privileges beyond read-only. |
 
 Only PostgreSQL is supported today; MySQL and SQL Server DSNs are recognized
@@ -164,10 +166,163 @@ The orphan is `payment`: in Pagila 3.1 it is a partitioned table whose foreign
 keys are declared on each monthly partition, not on the parent. With
 `--include-partitions` the seven partitions and their foreign keys appear
 (22 tables, 36 foreign keys). Lifting partition foreign keys to the parent is
-an open question for segmentation (M2); M1 reports the catalog as it is.
+handled in segmentation: M2 infers the missing references from column
+names (see [Segmentation](#segmentation-m2)); M1 reports the catalog as it
+is.
 
 `|o--o{` marks an optional (nullable) foreign key, `||--o{` a mandatory one.
 Labels are constraint names, so the diagram stays traceable to the database.
+
+## Segmentation (M2)
+
+`kabr plan` turns a catalog into a `DomainPlan`: a YAML document
+(`apiVersion: kabr.dev/v1alpha1`, `kind: DomainPlan`) that groups every table
+into exactly one domain, flags sensitive columns with a masking action, and
+waits for a human to approve it. The M3 operator will act on approved plans
+only.
+
+1. **Baseline, no AI.** Deterministic Louvain community detection on the
+   foreign-key graph, plus references inferred from column names (`X_id`
+   without a declared foreign key) at half weight. Junction, lookup and
+   orphan tables are recognized and placed explicitly. Domains are named
+   after their anchor table and sensitive columns come from a heuristic over
+   column names and types. Same catalog, byte-identical plan.
+2. **Optional LLM refinement.** Anthropic (default when credentials are
+   present) or a local Ollama model may rename and describe domains, move
+   tables and classify sensitive columns. Only allowlisted catalog metadata
+   is sent, never rows. Every proposed change is validated against the
+   catalog; anything invalid is dropped with a warning, and an unusable
+   answer falls back to the baseline.
+3. **Human approval.** `kabr plan approve --by NAME` always re-validates the
+   plan against a catalog (`--catalog`, `--dsn` or `$KABR_DSN`; one is
+   required): structure, coverage of every catalog table and the catalog
+   fingerprint. Only then does it record who approved it and when. Because
+   the plan is pinned to a structural fingerprint of the catalog, a plan for
+   a different schema, or one whose fingerprint was edited, is refused.
+
+Design: [ADR 0004](docs/adr/0004-segmentation-baseline-llm-approval.md)
+(pipeline) and [ADR 0005](docs/adr/0005-llm-providers-metadata-only.md)
+(providers, privacy). What reaches an LLM is listed in
+[SECURITY.md](SECURITY.md#what-is-sent-to-an-llm).
+
+### Quickstart
+
+No database needed: the committed Pagila catalog is enough.
+
+```sh
+make plan-demo          # graph-only plan from examples/pagila.schema.json -> examples/pagila.plan.yaml
+make eval-pagila        # score it against evals/pagila/gold.yaml
+
+kabr plan show examples/pagila.plan.yaml                     # table view
+kabr plan validate examples/pagila.plan.yaml --catalog examples/pagila.schema.json
+kabr plan eval examples/pagila.plan.yaml --gold evals/pagila/gold.yaml
+
+# Generate your own; --llm defaults to anthropic when ANTHROPIC_API_KEY is
+# set, otherwise none (with a notice on stderr).
+kabr plan generate --catalog examples/pagila.schema.json --llm none --out pagila.plan.yaml
+kabr plan generate --llm ollama --model llama3.1 --out app.plan.yaml     # reads $KABR_DSN (exported above)
+kabr plan generate --catalog examples/pagila.schema.json --resolution 1.5 --out finer.plan.yaml
+
+kabr plan approve pagila.plan.yaml --by alice --catalog examples/pagila.schema.json
+```
+
+| Command | Purpose |
+|---------|---------|
+| `kabr plan generate [--catalog FILE \| --dsn DSN] [--llm anthropic\|ollama\|none] [--model M] [--effort low\|medium\|high\|xhigh\|max] [--resolution F] [--name N] [--out FILE]` | Build a plan from a catalog file or a live, read-only introspection. |
+| `kabr plan show FILE [--format table\|yaml\|json]` | Print a plan. |
+| `kabr plan validate FILE [--catalog FILE]` | Strict decoding and validation; with `--catalog`, also coverage and fingerprint. |
+| `kabr plan approve FILE --by NAME (--catalog FILE \| --dsn DSN)` | Re-validate against the catalog (required: `--catalog`, `--dsn` or `$KABR_DSN`) and set `status.phase: Approved`. |
+| `kabr plan eval FILE --gold FILE` | Score against a gold standard (pairwise F1, ARI, sensitive-column metrics). |
+
+| Variable | Meaning |
+|----------|---------|
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | Anthropic credentials, resolved by the official SDK only (it also accepts an `ant auth login` profile or workload identity federation environment variables). |
+| `ANTHROPIC_BASE_URL` | Read by the SDK: redirects where catalog metadata is sent. Only point it at an endpoint you trust as much as the Anthropic API. |
+| `KABR_LLM_MODEL` | Model override (defaults: `claude-opus-5-5`, `llama3.1`). |
+| `KABR_OLLAMA_URL` | Ollama base URL (default `http://127.0.0.1:11434`). |
+
+Exit codes are the same as for `kabr introspect` (0, 1, 2, 3); for
+`kabr plan`, exit 1 also means an invalid plan, a refused approval or an
+eval table-coverage mismatch (see `kabr help plan`).
+
+### Example plan
+
+Excerpt of the committed graph-only plan,
+[examples/pagila.plan.yaml](examples/pagila.plan.yaml), copied verbatim
+except for `# ...` lines, which elide the `description` and `rationale`
+fields, most sensitive columns and the full fingerprint. Keys and domains
+appear in the order the file uses (alphabetical keys, domains sorted by
+name):
+
+```yaml
+apiVersion: kabr.dev/v1alpha1
+kind: DomainPlan
+metadata:
+  name: pagila
+spec:
+  domains:
+  - # ... description, rationale
+    name: city
+    tables:
+    - name: public.city
+      role: core
+    - name: public.country
+      role: core
+  - # ... description, rationale
+    name: film
+    # ... sensitiveColumns (actor first_name, last_name)
+    tables:
+    - name: public.actor
+      role: core
+    # ... category, film, film_actor (junction), film_category (junction),
+    # ... inventory (core)
+    - name: public.language
+      role: lookup
+  - # ... description, rationale
+    name: store
+    sensitiveColumns:
+    # ... address, customer, payment and staff columns
+    - action: drop
+      class: credential
+      column: password
+      source: heuristic
+      table: public.staff
+    # ...
+    tables:
+    - name: public.address
+      role: core
+    # ... customer, payment, rental, staff, store (all core)
+  source:
+    catalogFingerprint: sha256:8123ea29... # ...
+    database: pagila
+    dialect: postgres
+    schemaVersion: kabr.dev/v1alpha1
+status:
+  generator:
+    mode: graph
+    modularity: 0.4087
+  phase: Proposed
+```
+
+### Pagila evaluation
+
+Graph-only baseline against the human gold standard in
+[evals/pagila/gold.yaml](evals/pagila/gold.yaml) (4 domains: catalog,
+customers, rentals, stores), measured 2026-11-23:
+
+| Resolution γ | Domains | Pairwise F1 | ARI |
+|--------------|---------|-------------|-----|
+| 1.0 (default) | 3 | 0.613 | 0.459 |
+| 1.5 | 4 | 0.755 | 0.672 |
+
+At γ = 1.0 the modularity is Q = 0.4087 and customers, rentals, payments and
+staff land in one `store` domain, which is the main gap to the gold. The
+default stays at 1.0 so it is not tuned to the only labeled dataset.
+Sensitive columns: recall 1.000, class accuracy 1.000, precision 0.733 (15
+flagged, 11 in the gold). The unit tests keep floors of F1 ≥ 0.59,
+ARI ≥ 0.43 and sensitive recall = 1, and a gold-standard refiner reaches
+F1 = ARI = 1, showing the refinement path can fully regroup tables. The gold
+is human judgement; see [evals/README.md](evals/README.md).
 
 ## Read-only by design
 
@@ -233,7 +388,7 @@ kabr: --strict: refusing to introspect as role "kabr_unsafe" (89 privilege(s) be
 | Milestone | Scope | Status |
 |-----------|-------|--------|
 | **M1** | Read-only PostgreSQL introspection, canonical catalog, FK graph, Mermaid/DOT export, `kabr introspect`, least-privilege check | ✅ Done |
-| **M2** | Community detection + LLM segmentation, sensitive-column classification, `DomainPlan` CRD with human approval | 🗺️ Planned |
+| **M2** | Deterministic community detection + optional LLM refinement, sensitive-column classification, `DomainPlan` with human approval, `kabr plan`, Pagila eval gate | ✅ Done |
 | **M3** | Operator (kubebuilder), `DomainAPI` CRD, generic REST/OpenAPI runtime with masking, row limits and allowlists | 🗺️ Planned |
 | **M4** | MCP server per domain, OpenTelemetry audit, quotas | 🗺️ Planned |
 | **M5** | Segmentation evals in CI (Pagila, Chinook, Northwind, AdventureWorks) | 🗺️ Planned |
@@ -248,8 +403,15 @@ pkg/schema/          canonical, versioned catalog model (JSON)
 pkg/graph/           table graph, metrics, Mermaid and DOT exporters
 pkg/introspect/      dialect-agnostic introspection API, DSN redaction
 pkg/introspect/postgres/   PostgreSQL introspector (pgx) and privilege check
+pkg/segment/         deterministic Louvain segmentation of the table graph
+pkg/planner/         baseline DomainPlan, sensitive-column heuristic, refinement
+pkg/llm/             LLM refiners (Anthropic, Ollama), metadata-only prompt
+pkg/plan/            DomainPlan model, strict YAML, validation, approval
+pkg/eval/            scoring against gold standards (F1, ARI, sensitive columns)
+api/v1alpha1/        published DomainPlan JSON Schema
+evals/               human gold standards (Pagila)
 deploy/compose/      demo PostgreSQL + Pagila with read-only and unsafe roles
-examples/            committed output of make introspect-demo
+examples/            committed output of make introspect-demo and make plan-demo
 docs/                architecture and ADRs
 ```
 
@@ -267,12 +429,16 @@ make build              # bin/kabr, version from git describe
 
 Linters and scanners run through `go run module@version`, pinned to the same
 versions as CI, so nothing has to be installed globally. CI runs lint, unit
-and integration tests and `govulncheck` on every push and pull request.
+and integration tests, `make eval-pagila` (the graph-only Pagila eval with
+its pinned regression floors; no LLM call, no credentials) and `govulncheck`
+on every push and pull request.
 
 Design decisions are recorded as ADRs:
 [0001 Go, single module](docs/adr/0001-go-single-module.md),
 [0002 catalog-only read-only access](docs/adr/0002-catalog-only-read-only-access.md),
-[0003 CLI on the standard library](docs/adr/0003-cli-framework.md).
+[0003 CLI on the standard library](docs/adr/0003-cli-framework.md),
+[0004 segmentation: baseline, LLM refinement, approval](docs/adr/0004-segmentation-baseline-llm-approval.md),
+[0005 LLM providers and the metadata-only invariant](docs/adr/0005-llm-providers-metadata-only.md).
 
 ## Origin
 

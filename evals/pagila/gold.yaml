@@ -1,0 +1,61 @@
+# Gold standard for the Pagila sample database (DVD rental store).
+#
+# This is HUMAN JUDGEMENT, not ground truth: it records how a data engineer
+# would split Pagila into business domains for an extraction/migration plan.
+# Planners are scored against it to catch regressions, not to hit 1.000.
+name: pagila
+description: >-
+  Pagila (PostgreSQL port of Sakila): DVD rental store with a film catalog,
+  customers and their addresses, rentals/payments and store staff.
+catalog: examples/pagila.schema.json
+
+domains:
+  # The product catalog: what can be rented. film_actor and film_category are
+  # pure bridge tables between film and actor/category, so they live with
+  # film. language is a lookup table referenced only by film.
+  catalog:
+    - public.film
+    - public.actor
+    - public.category
+    - public.language
+    - public.film_actor
+    - public.film_category
+  # Who rents. address/city/country form the geography chain; customer is its
+  # main consumer (staff and store also reference address, but the address
+  # hierarchy is customer master data in practice).
+  customers:
+    - public.customer
+    - public.address
+    - public.city
+    - public.country
+  # The transactional core: physical copies (inventory) being rented and paid
+  # for. inventory sits here rather than in catalog because it is per-store
+  # stock that rentals reference, not product metadata.
+  rentals:
+    - public.rental
+    - public.inventory
+    - public.payment
+  # The organization: stores and the staff that run them (store.manager_staff_id
+  # and staff.store_id reference each other).
+  stores:
+    - public.store
+    - public.staff
+
+# Must-flag set: every column below MUST be detected as sensitive. Other
+# columns may also be flagged (that only lowers precision). All columns were
+# verified to exist in examples/pagila.schema.json.
+sensitive:
+  # Credentials: login material for staff.
+  - {table: public.staff, column: password, class: credential}
+  - {table: public.staff, column: username, class: credential}
+  # PII: direct identifiers and contact data of people.
+  - {table: public.customer, column: email, class: pii}
+  - {table: public.staff, column: email, class: pii}
+  - {table: public.address, column: phone, class: pii}
+  - {table: public.address, column: address, class: pii}
+  - {table: public.customer, column: first_name, class: pii}
+  - {table: public.customer, column: last_name, class: pii}
+  - {table: public.staff, column: first_name, class: pii}
+  - {table: public.staff, column: last_name, class: pii}
+  # Financial: monetary amounts tied to a person (payment.customer_id).
+  - {table: public.payment, column: amount, class: financial}

@@ -131,39 +131,14 @@ func runIntrospect(ctx context.Context, args []string, env *Env) error {
 	if err != nil {
 		return err
 	}
-	secrets := dsnSecrets(f.dsn)
-	fail := func(prefix string, err error) error {
-		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
-			return errors.New("interrupted")
-		}
-		return introspect.SanitizeError(prefix, err, secrets...)
-	}
-
 	opts := introspect.Options{
 		Schemas:           f.schemas.values,
 		IncludeStats:      !f.noStats,
 		IncludePartitions: f.includePartitions,
 	}
-	in, err := env.Open(ctx, f.dsn, introspect.Config{StatementTimeout: f.statementTimeout})
+	cat, fail, err := introspectCatalog(ctx, env, f.dsn, opts, f.strict, f.statementTimeout)
 	if err != nil {
-		return fail("connect", err)
-	}
-	defer func() { _ = in.Close() }()
-
-	rep, err := in.CheckPrivileges(ctx, opts)
-	if err != nil {
-		return fail("privilege check", err)
-	}
-	writePrivilegeWarnings(env.Stderr, rep)
-	if f.strict && !rep.ReadOnly {
-		return &exitError{code: ExitStrict, msg: fmt.Sprintf(
-			"--strict: refusing to introspect as role %q (%d privilege(s) beyond read-only)",
-			rep.Role, privilegeCount(rep))}
-	}
-
-	cat, err := in.Introspect(ctx, opts)
-	if err != nil {
-		return fail("introspect", err)
+		return err
 	}
 	if f.timestamp {
 		now := time.Now().UTC().Truncate(time.Second)
@@ -182,6 +157,52 @@ func runIntrospect(ctx context.Context, args []string, env *Env) error {
 	}
 	writeSummary(env.Stderr, cat, opts, f)
 	return nil
+}
+
+// failFunc turns an error into a redacted, prefixed error.
+type failFunc func(prefix string, err error) error
+
+// newFail returns a failFunc that never prints dsn or its password and maps
+// a cancellation of ctx to "interrupted".
+func newFail(ctx context.Context, dsn string) failFunc {
+	secrets := dsnSecrets(dsn)
+	return func(prefix string, err error) error {
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+			return errors.New("interrupted")
+		}
+		return introspect.SanitizeError(prefix, err, secrets...)
+	}
+}
+
+// introspectCatalog is the read-only M1 code path shared by "introspect"
+// and the plan commands that accept --dsn: open, check privileges (print
+// warnings; with strict, refuse with [ExitStrict]), read the catalog, close.
+// Every returned error is already redacted; fail redacts later errors.
+func introspectCatalog(ctx context.Context, env *Env, dsn string, opts introspect.Options,
+	strict bool, statementTimeout time.Duration) (*schema.Catalog, failFunc, error) {
+	fail := newFail(ctx, dsn)
+	in, err := env.Open(ctx, dsn, introspect.Config{StatementTimeout: statementTimeout})
+	if err != nil {
+		return nil, fail, fail("connect", err)
+	}
+	defer func() { _ = in.Close() }()
+
+	rep, err := in.CheckPrivileges(ctx, opts)
+	if err != nil {
+		return nil, fail, fail("privilege check", err)
+	}
+	writePrivilegeWarnings(env.Stderr, rep)
+	if strict && !rep.ReadOnly {
+		return nil, fail, &exitError{code: ExitStrict, msg: fmt.Sprintf(
+			"--strict: refusing to introspect as role %q (%d privilege(s) beyond read-only)",
+			rep.Role, privilegeCount(rep))}
+	}
+
+	cat, err := in.Introspect(ctx, opts)
+	if err != nil {
+		return nil, fail, fail("introspect", err)
+	}
+	return cat, fail, nil
 }
 
 func render(cat *schema.Catalog, format string) ([]byte, error) {

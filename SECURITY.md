@@ -50,4 +50,76 @@ reporting.
   password removed.
 - **Pinned supply chain.** CI actions and Go tools are pinned to explicit
   versions, workflows run with `contents: read`, and `govulncheck` runs on
-  every change.
+  every change. In M2 the Go toolchain was raised to
+  go1.26.11 (GO-2026-6859, `net/http`) and the indirect dependency
+  `go.opentelemetry.io/otel` to v1.47.0 (GO-2026-6974); `govulncheck`
+  reports no findings.
+- **Nothing is generated without approval.** Segmentation produces a
+  `DomainPlan` in phase `Proposed`; only a human running
+  `kabr plan approve --by NAME` makes it `Approved`, and the operator (M3)
+  will act on approved plans only.
+
+## What is sent to an LLM
+
+Segmentation (`kabr plan generate`) can optionally ask a language model to
+refine the deterministic baseline. Design:
+[ADR 0005](docs/adr/0005-llm-providers-metadata-only.md).
+
+**Sent** (catalog metadata only, from an explicit allowlist):
+
+- table IDs (`schema.table`) and table comments;
+- column name, data type, nullability and comment;
+- primary key columns; foreign key columns with the referenced table and
+  columns; unique constraint columns;
+- the baseline plan: domain names and, per table, its ID, role and shared
+  flag.
+
+**Never sent:**
+
+- row data (Kabr never reads rows);
+- column default expressions (they may embed literal values);
+- planner statistics (row estimates, `n_distinct`);
+- index definitions and constraint names;
+- the database name, the DSN or any credential;
+- the baseline's rationales.
+
+The prompt is built from a dedicated metadata-only structure, never by
+serializing the catalog model, and the system prompt contains no catalog
+data. A test walks every JSON key of the prompt against the allowlist, and
+sentinel tests plant marker values in every forbidden field and assert they
+never reach the request. A field added to the catalog model is therefore not
+sent unless the allowlist is changed deliberately.
+
+**Caveat: comments are sent verbatim.** Table and column comments are
+DBA-written free text and may contain anything. A control to omit them is
+future work. If you consider schema names or comments themselves sensitive,
+do not use a hosted provider.
+
+**Staying fully local.**
+
+- `--llm none`: graph-only baseline, no network call at all. This is also
+  what the CLI uses when no Anthropic credentials are present (with a notice
+  on stderr).
+- `--llm ollama`: a local model through Ollama
+  (`KABR_OLLAMA_URL`, default `http://127.0.0.1:11434`).
+- `--llm anthropic` sends the metadata above to the Anthropic API.
+  Credentials are resolved by the official SDK: `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`, an `ant auth login` profile, or workload identity
+  federation environment variables. Kabr never stores or logs them. (Without
+  `--llm`, the CLI picks `anthropic` only when `ANTHROPIC_API_KEY` or
+  `ANTHROPIC_AUTH_TOKEN` is set.)
+- `ANTHROPIC_BASE_URL`, read by the SDK, redirects where that metadata is
+  sent. Whoever runs Kabr must trust whatever endpoint it points to (a
+  proxy or gateway sees the same metadata the Anthropic API would).
+
+**Model output is untrusted.** Answers are constrained with a JSON Schema
+and then decoded strictly (exact keys, enum values). Every proposed rename,
+table move and classification is validated against the catalog by
+`plan.Apply`; invalid items are skipped with a warning, and if the result
+does not validate, or the model refuses or is truncated, the deterministic
+baseline is used instead. The output is always a `Proposed` plan that a
+human must approve before anything is generated from it.
+
+A prompt that carries a field from the "never sent" list, or a model answer
+that bypasses validation, is a security bug; please report it as described
+above.

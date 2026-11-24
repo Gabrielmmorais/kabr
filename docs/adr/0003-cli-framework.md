@@ -12,6 +12,10 @@ Milestone M1 ships the `kabr` binary with three commands: `introspect`,
 commands (segmentation in M2, plan approval helpers in M3), but most of the
 product surface moves into the Kubernetes operator and its CRDs, not the CLI.
 
+> **Note (2026-11-23, M2):** plan approval shipped earlier than expected, in
+> M2, as `kabr plan approve` (one of the `kabr plan` subcommands, still on
+> the standard library `flag` package). The decision below is unchanged.
+
 Kabr is handed production database credentials. Every dependency compiled
 into the binary is part of what an operator has to trust, and part of what
 `govulncheck` and reviewers have to follow.
