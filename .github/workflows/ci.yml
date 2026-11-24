@@ -16,12 +16,15 @@ env:
   # Pinned tool versions. Bump deliberately, never float to "latest".
   GOLANGCI_LINT_VERSION: v2.15.0
   GOVULNCHECK_VERSION: v1.9.0
+  # controller-gen, setup-envtest and the envtest Kubernetes version are
+  # pinned in the Makefile (CONTROLLER_GEN_VERSION, SETUP_ENVTEST_VERSION,
+  # ENVTEST_K8S_VERSION); the jobs below call make so there is one source.
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -37,6 +40,7 @@ jobs:
           go vet ./...
           go vet -tags integration ./...
           go vet -tags llm_live ./...
+          go vet -tags envtest ./...
 
       - name: gofmt
         run: |
@@ -51,6 +55,19 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+      # DeepCopy code, CRDs and RBAC are generated from the Go types and
+      # markers and committed; fail when they are stale.
+      - name: Generated code and manifests are up to date
+        run: |
+          make generate manifests
+          git diff --exit-code
+          untracked="$(git status --porcelain --untracked-files=all)"
+          if [ -n "$untracked" ]; then
+            echo "Generated files are not committed:"
+            echo "$untracked"
+            exit 1
+          fi
 
   test:
     name: Test
@@ -79,6 +96,26 @@ jobs:
       # or the planner regression floors are crossed.
       - name: Eval (Pagila, graph-only)
         run: make eval-pagila
+
+  envtest:
+    name: Envtest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Starts a real kube-apiserver and etcd (setup-envtest downloads them
+      # into bin/envtest) and runs the `envtest`-tagged suites: the CRDs
+      # must keep an approved plan verifiable and reject invalid objects.
+      - name: Envtest (kube-apiserver + etcd)
+        run: make envtest
 
   vuln:
     name: Vulnerability scan

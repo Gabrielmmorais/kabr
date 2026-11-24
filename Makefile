@@ -19,17 +19,29 @@ demo_dsn = postgres://$(1):$${$(2)}@$(DEMO_ADDR)/pagila?sslmode=disable
 LOAD_DEMO_ENV = test -r $(DEMO_ENV) || { echo "$(DEMO_ENV) not found - run 'make demo-up' first" >&2; exit 1; }; \
 	set -a; . ./$(DEMO_ENV); set +a
 
-.PHONY: help build test test-integration test-demo lint vuln introspect-demo introspect-demo-unsafe \
+.PHONY: help build test test-integration test-demo lint vuln generate manifests envtest \
+        introspect-demo introspect-demo-unsafe \
         plan-demo eval-pagila demo-secrets demo-fetch demo-up demo-down demo-psql
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_.-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 # --- Go targets ---------------------------------------------------------------
-# Pinned tool versions (keep in sync with .github/workflows/ci.yml). Both run
+# Pinned tool versions (keep in sync with .github/workflows/ci.yml). All run
 # through `go run pkg@version`: reproducible, no global install, no sudo.
-GOLANGCI_LINT_VERSION ?= v2.15.0
-GOVULNCHECK_VERSION   ?= v1.9.0
+GOLANGCI_LINT_VERSION  ?= v2.15.0
+GOVULNCHECK_VERSION    ?= v1.9.0
+CONTROLLER_GEN_VERSION ?= v0.23.0
+SETUP_ENVTEST_VERSION  ?= v0.25.3
+# Kubernetes version of the envtest control plane (kube-apiserver + etcd);
+# `go run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION) list`
+# shows the versions on offer.
+ENVTEST_K8S_VERSION    ?= 1.37.0
+# Where setup-envtest stores the control plane binaries (bin/ is gitignored).
+ENVTEST_BIN_DIR        ?= bin/envtest
+
+CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+SETUP_ENVTEST  = go run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
 
 BIN      ?= bin/kabr
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -46,12 +58,30 @@ test-integration: ## Run unit + integration tests (needs Docker; uses testcontai
 	go test -race -count=1 -tags integration ./...
 
 lint: ## go vet, gofmt and golangci-lint (pinned, via go run)
-	go vet ./... && go vet -tags integration ./... && go vet -tags llm_live ./...
+	go vet ./... && go vet -tags integration ./... && go vet -tags llm_live ./... && go vet -tags envtest ./...
 	@test -z "$$(gofmt -l .)" || { echo "files need gofmt:"; gofmt -l .; exit 1; }
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 
 vuln: ## Scan for known vulnerabilities (govulncheck, pinned)
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+
+# --- Kubernetes API (kabr.dev/v1alpha1) ----------------------------------------
+# Generated files are committed; CI fails when they drift from the Go types.
+
+generate: ## Generate DeepCopy code (controller-gen object) for api/ and pkg/plan
+	$(CONTROLLER_GEN) object:headerFile=hack/boilerplate.go.txt paths=./api/... paths=./pkg/plan/...
+
+manifests: ## Generate CRDs (config/crd/bases) and operator RBAC (config/rbac) from markers
+	$(CONTROLLER_GEN) crd paths=./api/... output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=kabr-operator paths=./internal/controller/... output:rbac:artifacts:config=config/rbac
+
+# setup-envtest prints a path relative to a relative --bin-dir; "cd && pwd"
+# makes it absolute, because each test package runs in its own directory.
+envtest: ## Run unit + envtest tests against a real kube-apiserver/etcd (downloaded into bin/envtest)
+	@assets="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir "$(ENVTEST_BIN_DIR)" -p path)" && \
+	assets="$$(CDPATH= cd -- "$$assets" && pwd)" && \
+	echo "KUBEBUILDER_ASSETS=$$assets" && \
+	KUBEBUILDER_ASSETS="$$assets" go test -race -count=1 -tags envtest ./...
 
 introspect-demo: build ## Introspect the demo Pagila DB into examples/ (after make demo-up)
 	@mkdir -p $(EXAMPLES)

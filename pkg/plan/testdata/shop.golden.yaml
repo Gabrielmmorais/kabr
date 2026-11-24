@@ -47,6 +47,7 @@ spec:
     dialect: postgres
     schemaVersion: kabr.dev/v1alpha1
 status:
+  approvalDigest: sha256:fac67360d122786be9877dff20352835e9f08b017456cc10ebefb9f10eb741bf
   approvedAt: "2026-11-23T12:30:45Z"
   approvedBy: alice@example.com
   generator:

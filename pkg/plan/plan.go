@@ -85,9 +85,11 @@ func Unmarshal(data []byte) (*DomainPlan, error) {
 }
 
 // Approve marks the plan as approved by `by` at `now` (stored in UTC,
-// truncated to seconds). It refuses an empty approver and a plan that fails
-// [DomainPlan.ValidateStructure]. Re-approving an approved plan updates the
-// approver and timestamp.
+// truncated to seconds) and records [SpecDigest] of the spec in
+// status.approvalDigest, so that any later edit of the spec is detected by
+// [VerifyApproval] and [DomainPlan.ValidateStructure]. It refuses an empty
+// approver and a plan that fails [DomainPlan.ValidateStructure].
+// Re-approving an approved plan updates the approver, timestamp and digest.
 func Approve(p *DomainPlan, by string, now time.Time) error {
 	if p == nil {
 		return errors.New("plan: cannot approve nil plan")
@@ -99,19 +101,32 @@ func Approve(p *DomainPlan, by string, now time.Time) error {
 	if now.IsZero() {
 		return errors.New("plan: approval time must not be zero")
 	}
-	// Validate as if already approved, so the approval fields are not the
-	// reason for a failure.
-	probe := p.clone()
-	probe.Status.Phase = PhaseProposed
-	probe.Status.ApprovedBy, probe.Status.ApprovedAt = "", nil
-	if err := probe.ValidateStructure(); err != nil {
+	// Validate as a proposal, so a previous (possibly stale) approval is not
+	// the reason for a failure.
+	if err := p.WithoutApproval().ValidateStructure(); err != nil {
 		return fmt.Errorf("plan: cannot approve invalid plan: %w", err)
 	}
 	at := now.UTC().Truncate(time.Second)
 	p.Status.Phase = PhaseApproved
 	p.Status.ApprovedBy = by
 	p.Status.ApprovedAt = &at
+	p.Status.ApprovalDigest = SpecDigest(p.Spec)
 	return nil
+}
+
+// WithoutApproval returns a deep copy of the plan in [PhaseProposed] with
+// approvedBy, approvedAt and approvalDigest cleared: the plan as a proposal.
+// Validating it checks everything except the approval, which is what a
+// re-approval needs (a plan edited after approval is re-validated and
+// approved again instead of being refused for its stale digest).
+func (p *DomainPlan) WithoutApproval() *DomainPlan {
+	if p == nil {
+		return nil
+	}
+	out := p.clone()
+	out.Status.Phase = PhaseProposed
+	out.Status.ApprovedBy, out.Status.ApprovedAt, out.Status.ApprovalDigest = "", nil, ""
+	return out
 }
 
 // Domain returns the domain with the given name, or nil.

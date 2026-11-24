@@ -30,7 +30,8 @@ const refinedPrefix = "refined: "
 // returned warnings; warnings are not copied into the plan's status. If the
 // resulting plan fails [DomainPlan.Validate] against c, Apply returns an
 // error and the caller should keep the baseline. The result is always in
-// [PhaseProposed] with approval cleared: a changed plan must be re-approved.
+// [PhaseProposed] with approval (including the approval digest) cleared: a
+// changed plan must be re-approved.
 func Apply(p *DomainPlan, r Refinement, c *schema.Catalog) (*DomainPlan, []string, error) {
 	if p == nil {
 		return nil, nil, errors.New("plan: cannot refine nil plan")
@@ -162,6 +163,7 @@ func Apply(p *DomainPlan, r Refinement, c *schema.Catalog) (*DomainPlan, []strin
 	out.Status.Phase = PhaseProposed
 	out.Status.ApprovedBy = ""
 	out.Status.ApprovedAt = nil
+	out.Status.ApprovalDigest = ""
 
 	if err := out.Validate(c); err != nil {
 		return nil, warnings, fmt.Errorf("plan: refined plan is invalid: %w", err)
