@@ -13,10 +13,13 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Gabrielmmorais/kabr/pkg/introspect"
 	// Register the PostgreSQL introspector with introspect.Open.
 	_ "github.com/Gabrielmmorais/kabr/pkg/introspect/postgres"
+	"github.com/Gabrielmmorais/kabr/pkg/llm"
+	"github.com/Gabrielmmorais/kabr/pkg/planner"
 )
 
 // Exit codes returned by [Run].
@@ -38,6 +41,19 @@ const DSNEnv = "KABR_DSN"
 // OpenFunc opens an introspector; it matches [introspect.Open].
 type OpenFunc func(ctx context.Context, dsn string, cfg introspect.Config) (introspect.Introspector, error)
 
+// RefinerFunc builds the LLM refiner of "plan generate"; it matches
+// [llm.New] (a nil Refiner means graph-only).
+type RefinerFunc func(cfg llm.Config) (planner.Refiner, error)
+
+// newLLMRefiner adapts [llm.New] to [RefinerFunc], keeping a nil refiner nil.
+func newLLMRefiner(cfg llm.Config) (planner.Refiner, error) {
+	r, err := llm.New(cfg)
+	if err != nil || r == nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 // Env carries the process environment of one invocation.
 type Env struct {
 	Stdout io.Writer
@@ -48,6 +64,11 @@ type Env struct {
 	Version string
 	// Open opens the introspector; nil means introspect.Open.
 	Open OpenFunc
+	// NewRefiner builds the LLM refiner; nil means llm.New. Tests inject a
+	// fake so that no network call is ever made.
+	NewRefiner RefinerFunc
+	// Now returns the current time (plan approve); nil means time.Now.
+	Now func() time.Time
 }
 
 func (e *Env) defaults() {
@@ -62,6 +83,12 @@ func (e *Env) defaults() {
 	}
 	if e.Open == nil {
 		e.Open = introspect.Open
+	}
+	if e.NewRefiner == nil {
+		e.NewRefiner = newLLMRefiner
+	}
+	if e.Now == nil {
+		e.Now = time.Now
 	}
 	if e.Version == "" {
 		e.Version = ResolveVersion("")
@@ -88,6 +115,8 @@ Usage:
 Commands:
   introspect   Read the catalog of a database (read-only) and export it
                as canonical JSON, a Mermaid ER diagram or Graphviz DOT
+  plan         Generate, show, validate, approve and evaluate a domain
+               plan (subcommands: generate, show, validate, approve, eval)
   version      Print the kabr version
   help         Show help for kabr or for a command
 
@@ -95,7 +124,7 @@ Run "kabr help <command>" for the flags of a command.
 
 Exit codes:
   0  success
-  1  error (connection, query, output)
+  1  error (connection, query, output, invalid plan)
   2  invalid usage
   3  --strict refused an over-privileged role
 `
@@ -112,6 +141,8 @@ func Run(ctx context.Context, args []string, env Env) int {
 	switch cmd, rest := args[0], args[1:]; cmd {
 	case "introspect":
 		err = runIntrospect(ctx, rest, &env)
+	case "plan":
+		err = runPlan(ctx, rest, &env)
 	case "version", "--version", "-version":
 		if len(rest) > 0 {
 			err = usageErr("version takes no arguments")
@@ -133,6 +164,8 @@ func runHelp(args []string, env *Env) error {
 	case len(args) == 1 && args[0] == "introspect":
 		fs, _ := newIntrospectFlags()
 		printIntrospectUsage(env.Stdout, fs)
+	case len(args) >= 1 && args[0] == "plan":
+		return planHelp(args[1:], env)
 	case len(args) == 1 && args[0] == "version":
 		fmt.Fprintln(env.Stdout, "Usage: kabr version\n\nPrint the kabr version.")
 	case len(args) == 1 && args[0] == "help":

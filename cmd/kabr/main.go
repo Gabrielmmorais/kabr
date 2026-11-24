@@ -2,10 +2,13 @@
 //
 // Milestone M1 ships the introspect command: it reads the catalog of a
 // PostgreSQL database with a read-only role and exports it as canonical
-// JSON, a Mermaid ER diagram or Graphviz DOT. Run "kabr help" for usage.
+// JSON, a Mermaid ER diagram or Graphviz DOT. Milestone M2 adds the plan
+// command: generate a domain plan from a catalog (graph segmentation plus an
+// optional LLM refinement), then show, validate, approve and evaluate it.
+// Run "kabr help" for usage.
 //
-// Exit codes: 0 success, 1 error, 2 invalid usage, 3 --strict refused an
-// over-privileged role.
+// Exit codes: 0 success, 1 error (including an invalid plan), 2 invalid
+// usage, 3 --strict refused an over-privileged role.
 package main
 
 import (

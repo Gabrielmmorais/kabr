@@ -33,7 +33,10 @@ jobs:
           cache: true
 
       - name: go vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
+          go vet -tags llm_live ./...
 
       - name: gofmt
         run: |
@@ -70,6 +73,12 @@ jobs:
       # GitHub-hosted ubuntu runners ship a working Docker daemon.
       - name: Integration tests
         run: go test -race -count=1 -tags integration ./...
+
+      # Graph-only plan scored against the gold standard: no LLM call, no
+      # credentials. Fails if the plan and the gold cover different tables
+      # or the planner regression floors are crossed.
+      - name: Eval (Pagila, graph-only)
+        run: make eval-pagila
 
   vuln:
     name: Vulnerability scan

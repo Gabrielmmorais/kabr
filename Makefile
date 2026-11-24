@@ -20,7 +20,7 @@ LOAD_DEMO_ENV = test -r $(DEMO_ENV) || { echo "$(DEMO_ENV) not found - run 'make
 	set -a; . ./$(DEMO_ENV); set +a
 
 .PHONY: help build test test-integration test-demo lint vuln introspect-demo introspect-demo-unsafe \
-        demo-secrets demo-fetch demo-up demo-down demo-psql
+        plan-demo eval-pagila demo-secrets demo-fetch demo-up demo-down demo-psql
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_.-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -46,7 +46,7 @@ test-integration: ## Run unit + integration tests (needs Docker; uses testcontai
 	go test -race -count=1 -tags integration ./...
 
 lint: ## go vet, gofmt and golangci-lint (pinned, via go run)
-	go vet ./... && go vet -tags integration ./...
+	go vet ./... && go vet -tags integration ./... && go vet -tags llm_live ./...
 	@test -z "$$(gofmt -l .)" || { echo "files need gofmt:"; gofmt -l .; exit 1; }
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 
@@ -65,6 +65,19 @@ introspect-demo-unsafe: build ## Show the least-privilege warning; --strict refu
 	code=0; ./$(BIN) introspect --strict >/dev/null || code=$$?; \
 	if [ "$$code" -eq 3 ]; then echo "OK: --strict refused the over-privileged role (exit 3)"; \
 	else echo "FAIL: expected exit 3, got $$code"; exit 1; fi
+
+# --- Domain plan (graph-only: no LLM call, no credentials needed) -------------
+PAGILA_GOLD ?= evals/pagila/gold.yaml
+# Scratch plan of eval-pagila; bin/ is gitignored.
+EVAL_PLAN   ?= bin/pagila.eval.plan.yaml
+
+plan-demo: build ## Generate examples/pagila.plan.yaml from examples/pagila.schema.json (graph-only)
+	./$(BIN) plan generate --catalog $(EXAMPLES)/pagila.schema.json --llm none --out $(EXAMPLES)/pagila.plan.yaml
+
+eval-pagila: build ## Score the graph-only Pagila plan against evals/pagila/gold.yaml
+	./$(BIN) plan generate --catalog $(EXAMPLES)/pagila.schema.json --llm none --out $(EVAL_PLAN)
+	./$(BIN) plan eval $(EVAL_PLAN) --gold $(PAGILA_GOLD)
+	go test -count=1 -run Pagila ./pkg/planner/
 
 test-demo: ## Run the integration test against the running demo (after make demo-up)
 	@$(LOAD_DEMO_ENV); export KABR_DEMO_DSN="$(call demo_dsn,kabr_reader,KABR_READER_PASSWORD)"; \
