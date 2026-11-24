@@ -1,0 +1,26 @@
+# DataSource of the demo: how the generated APIs reach Pagila read-only.
+# No credential here: the DSN of the read-only role kabr_reader is in the
+# Secret "pagila-dsn" (key "dsn") and the HMAC key of "hash" columns
+# (staff.username in examples/pagila.plan.yaml) in "pagila-hash-key", both
+# created with random values by deploy/kind/demo-secrets.sh.
+apiVersion: kabr.dev/v1alpha1
+kind: DataSource
+metadata:
+  name: pagila
+  namespace: kabr-demo
+spec:
+  driver: postgres
+  secretRef:
+    name: pagila-dsn
+    key: dsn
+  hashKeySecretRef:
+    name: pagila-hash-key
+    key: key
+  network:
+    # Egress the operator allows from each domain API: TCP 5432 to the demo
+    # Postgres pods (same namespace, so no namespaceSelector).
+    port: 5432
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/instance: pagila

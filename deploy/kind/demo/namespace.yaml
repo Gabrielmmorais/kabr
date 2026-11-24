@@ -1,0 +1,12 @@
+# Namespace of the demo database, its Secrets, the DataSource, the
+# DomainPlan and the per-domain APIs the operator creates.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kabr-demo
+  labels:
+    app.kubernetes.io/part-of: kabr-demo
+    # Everything here (Postgres and the kabr runtimes) runs under the
+    # "restricted" Pod Security Standard.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

@@ -1,0 +1,8 @@
+# Demo database in kind: namespace kabr-demo + Postgres/Pagila.
+# The Secrets it needs are created by deploy/kind/demo-secrets.sh (random,
+# never in a file under version control). Applied by `make demo-db`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - postgres.yaml

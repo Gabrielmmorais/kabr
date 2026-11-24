@@ -1,0 +1,131 @@
+# Demo PostgreSQL 17 with the Pagila sample database (image kabr-pagila:dev,
+# built from deploy/kind/pagila and loaded into kind with `make kind-load`).
+# LOCAL DEMO ONLY: ephemeral storage (emptyDir), one replica.
+#
+# Passwords come from the Secret "pagila-db", created at run time with random
+# values by deploy/kind/demo-secrets.sh; nothing secret is in this file. The
+# initdb scripts (the same as the compose demo) create the read-only role
+# kabr_reader, whose DSN is in the Secret "pagila-dsn" for the DataSource.
+#
+# The labels app.kubernetes.io/name=postgres + app.kubernetes.io/instance=pagila
+# are what deploy/kind/datasource.yaml selects (spec.network.podSelector).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: kabr-demo
+  labels: &labels
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/instance: pagila
+    app.kubernetes.io/part-of: kabr-demo
+spec:
+  replicas: 1
+  # emptyDir data: never run two instances side by side.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+      app.kubernetes.io/instance: pagila
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70 # "postgres" in the alpine image
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: kabr-pagila:dev
+          # Loaded into the kind node; never pulled.
+          imagePullPolicy: Never
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            # A subdirectory of the volume, created by the entrypoint as uid
+            # 70 (PostgreSQL refuses a data directory it does not own).
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pagila-db, key: POSTGRES_PASSWORD }
+            - name: KABR_READER_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pagila-db, key: KABR_READER_PASSWORD }
+            - name: KABR_UNSAFE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pagila-db, key: KABR_UNSAFE_PASSWORD }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # Loading Pagila on first start takes a while; the temporary initdb
+          # server listens on the Unix socket only, so the TCP check below
+          # stays false until the real server is up.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "pagila", "-h", "127.0.0.1"]
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 150
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "pagila", "-h", "127.0.0.1"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: kabr-demo
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/instance: pagila
+    app.kubernetes.io/part-of: kabr-demo
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/instance: pagila
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

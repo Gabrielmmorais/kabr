@@ -1,0 +1,18 @@
+# Local kind cluster for the Kabr demo and e2e test. LOCAL ONLY.
+#
+#   make kind-up     # create (idempotent); kubeconfig in bin/kind-kabr.kubeconfig
+#   make kind-down   # delete
+#
+# The cluster name comes from --name (KIND_CLUSTER, default "kabr") and the
+# node image from --image (KIND_NODE_IMAGE, pinned in the Makefile to the
+# default of kind v0.33.0). kind is always run with --kubeconfig, so
+# ~/.kube/config is never read or written; every kubectl call passes
+# --kubeconfig and --context kind-kabr explicitly.
+#
+# No host port mappings: the demo is reached with `kubectl port-forward`.
+# kindnet enforces NetworkPolicy (kind >= v0.24), so the operator's
+# per-domain NetworkPolicies are exercised for real.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
