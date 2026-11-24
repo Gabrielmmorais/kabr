@@ -328,6 +328,8 @@ func TestPlanUsageErrors(t *testing.T) {
 		{"validate both sources", nil, []string{"plan", "validate", planFile, "--catalog", "x", "--dsn", testDSN}, "exactly one"},
 		{"approve without --by", nil, []string{"plan", "approve", planFile}, "--by is required"},
 		{"approve blank --by", nil, []string{"plan", "approve", planFile, "--by", "  "}, "--by is required"},
+		{"approve no catalog", nil, []string{"plan", "approve", planFile, "--by", "alice"}, "approve needs a catalog to check the plan against: pass --catalog FILE or --dsn (or set KABR_DSN)"},
+		{"approve both sources", nil, []string{"plan", "approve", planFile, "--by", "alice", "--catalog", "x", "--dsn", testDSN}, "exactly one"},
 		{"eval without --gold", nil, []string{"plan", "eval", planFile}, "--gold is required"},
 		{"help unknown subcommand", nil, []string{"help", "plan", "nope"}, "unknown help topic"},
 	}
@@ -380,7 +382,8 @@ func TestPlanReadErrors(t *testing.T) {
 		{"plan", "show", missing},
 		{"plan", "show", bad},
 		{"plan", "validate", missing},
-		{"plan", "approve", missing, "--by", "a"},
+		{"plan", "approve", missing, "--by", "a", "--catalog", pagilaCatalogPath},
+		{"plan", "approve", pagilaPlanPath, "--by", "a", "--catalog", missing},
 		{"plan", "eval", missing, "--gold", pagilaGoldPath},
 		{"plan", "eval", pagilaPlanPath, "--gold", missing},
 	} {
@@ -511,15 +514,15 @@ func TestPlanApprove(t *testing.T) {
 		t.Errorf("approved plan is invalid: %v", err)
 	}
 
-	// --out leaves FILE alone; "-" writes to stdout; no catalog prints a notice.
+	// --out leaves FILE alone; "-" writes to stdout.
 	src := writePlan(t, nil)
 	out := filepath.Join(t.TempDir(), "approved.yaml")
-	r = runPlanCLI(t, planEnv{}, "plan", "approve", "--by", "bob", "--out", out, src)
+	r = runPlanCLI(t, planEnv{}, "plan", "approve", "--by", "bob", "--out", out, "--catalog", pagilaCatalogPath, src)
 	if r.code != ExitOK || readFile(t, src) != readFile(t, pagilaPlanPath) ||
-		!strings.Contains(readFile(t, out), "approvedBy: bob") || !strings.Contains(r.stderr, noCatalogNotice) {
+		!strings.Contains(readFile(t, out), "approvedBy: bob") || strings.Contains(r.stderr, noCatalogNotice) {
 		t.Errorf("--out: exit %d stderr %q", r.code, r.stderr)
 	}
-	r = runPlanCLI(t, planEnv{}, "plan", "approve", src, "--by", "bob", "--out", "-")
+	r = runPlanCLI(t, planEnv{}, "plan", "approve", src, "--by", "bob", "--out", "-", "--catalog", pagilaCatalogPath)
 	if r.code != ExitOK || !strings.Contains(r.stdout, "phase: Approved") || !strings.HasSuffix(r.stderr, "-> stdout\n") {
 		t.Errorf("--out -: exit %d stderr %q", r.code, r.stderr)
 	}
@@ -540,6 +543,24 @@ func TestPlanApprove(t *testing.T) {
 				t.Error("refused approval modified the file")
 			}
 		})
+	}
+}
+
+// TestPlanApproveNeedsCatalog: approval always checks a catalog, so a plan
+// with a tampered fingerprint cannot be approved by omitting --catalog.
+func TestPlanApproveNeedsCatalog(t *testing.T) {
+	tampered := writePlan(t, func(p *plan.DomainPlan) { p.Spec.Source.CatalogFingerprint = "sha256:" + strings.Repeat("b", 64) })
+	before := readFile(t, tampered)
+	r := runPlanCLI(t, planEnv{}, "plan", "approve", tampered, "--by", "mallory")
+	if r.code != ExitUsage || !strings.Contains(r.stderr, "approve needs a catalog") {
+		t.Errorf("no catalog: exit %d stderr:\n%s", r.code, r.stderr)
+	}
+	if readFile(t, tampered) != before {
+		t.Error("approval without a catalog modified the file")
+	}
+	r = runPlanCLI(t, planEnv{}, "plan", "approve", tampered, "--by", "mallory", "--catalog", pagilaCatalogPath)
+	if r.code != ExitError || !strings.Contains(r.stderr, "catalog mismatch") || readFile(t, tampered) != before {
+		t.Errorf("tampered fingerprint: exit %d stderr:\n%s", r.code, r.stderr)
 	}
 }
 

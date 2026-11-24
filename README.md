@@ -118,8 +118,8 @@ output or error message.
 | Exit code | Meaning |
 |-----------|---------|
 | `0` | Success (warnings may still have been printed). |
-| `1` | Error: connection, query, output or interruption (Ctrl-C). |
-| `2` | Invalid usage (unknown flag, missing DSN, bad value). |
+| `1` | Error: connection, query, output or interruption (Ctrl-C). For `kabr plan`, also an invalid plan, a refused approval or an eval table-coverage mismatch. |
+| `2` | Invalid usage (unknown flag, missing DSN or catalog, bad value). |
 | `3` | `--strict` refused a role with privileges beyond read-only. |
 
 Only PostgreSQL is supported today; MySQL and SQL Server DSNs are recognized
@@ -193,9 +193,12 @@ only.
    is sent, never rows. Every proposed change is validated against the
    catalog; anything invalid is dropped with a warning, and an unusable
    answer falls back to the baseline.
-3. **Human approval.** `kabr plan approve --by NAME` re-validates the plan
-   and records who approved it and when. The plan is pinned to a structural
-   fingerprint of the catalog, so a plan for a different schema is rejected.
+3. **Human approval.** `kabr plan approve --by NAME` always re-validates the
+   plan against a catalog (`--catalog`, `--dsn` or `$KABR_DSN`; one is
+   required): structure, coverage of every catalog table and the catalog
+   fingerprint. Only then does it record who approved it and when. Because
+   the plan is pinned to a structural fingerprint of the catalog, a plan for
+   a different schema, or one whose fingerprint was edited, is refused.
 
 Design: [ADR 0004](docs/adr/0004-segmentation-baseline-llm-approval.md)
 (pipeline) and [ADR 0005](docs/adr/0005-llm-providers-metadata-only.md)
@@ -217,7 +220,7 @@ kabr plan eval examples/pagila.plan.yaml --gold evals/pagila/gold.yaml
 # Generate your own; --llm defaults to anthropic when ANTHROPIC_API_KEY is
 # set, otherwise none (with a notice on stderr).
 kabr plan generate --catalog examples/pagila.schema.json --llm none --out pagila.plan.yaml
-kabr plan generate --dsn "$KABR_DSN" --llm ollama --model llama3.1 --out app.plan.yaml
+kabr plan generate --llm ollama --model llama3.1 --out app.plan.yaml     # reads $KABR_DSN (exported above)
 kabr plan generate --catalog examples/pagila.schema.json --resolution 1.5 --out finer.plan.yaml
 
 kabr plan approve pagila.plan.yaml --by alice --catalog examples/pagila.schema.json
@@ -228,22 +231,28 @@ kabr plan approve pagila.plan.yaml --by alice --catalog examples/pagila.schema.j
 | `kabr plan generate [--catalog FILE \| --dsn DSN] [--llm anthropic\|ollama\|none] [--model M] [--effort low\|medium\|high\|xhigh\|max] [--resolution F] [--name N] [--out FILE]` | Build a plan from a catalog file or a live, read-only introspection. |
 | `kabr plan show FILE [--format table\|yaml\|json]` | Print a plan. |
 | `kabr plan validate FILE [--catalog FILE]` | Strict decoding and validation; with `--catalog`, also coverage and fingerprint. |
-| `kabr plan approve FILE --by NAME [--catalog FILE]` | Re-validate and set `status.phase: Approved`. |
+| `kabr plan approve FILE --by NAME (--catalog FILE \| --dsn DSN)` | Re-validate against the catalog (required: `--catalog`, `--dsn` or `$KABR_DSN`) and set `status.phase: Approved`. |
 | `kabr plan eval FILE --gold FILE` | Score against a gold standard (pairwise F1, ARI, sensitive-column metrics). |
 
 | Variable | Meaning |
 |----------|---------|
-| `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | Anthropic credentials, read by the official SDK only. |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | Anthropic credentials, resolved by the official SDK only (it also accepts an `ant auth login` profile or workload identity federation environment variables). |
+| `ANTHROPIC_BASE_URL` | Read by the SDK: redirects where catalog metadata is sent. Only point it at an endpoint you trust as much as the Anthropic API. |
 | `KABR_LLM_MODEL` | Model override (defaults: `claude-opus-5-5`, `llama3.1`). |
 | `KABR_OLLAMA_URL` | Ollama base URL (default `http://127.0.0.1:11434`). |
 
-Exit codes are the same as for `kabr introspect` (0, 1, 2, 3).
+Exit codes are the same as for `kabr introspect` (0, 1, 2, 3); for
+`kabr plan`, exit 1 also means an invalid plan, a refused approval or an
+eval table-coverage mismatch (see `kabr help plan`).
 
 ### Example plan
 
 Excerpt of the committed graph-only plan,
-[examples/pagila.plan.yaml](examples/pagila.plan.yaml) (rationales,
-descriptions and most columns elided):
+[examples/pagila.plan.yaml](examples/pagila.plan.yaml), copied verbatim
+except for `# ...` lines, which elide the `description` and `rationale`
+fields, most sensitive columns and the full fingerprint. Keys and domains
+appear in the order the file uses (alphabetical keys, domains sorted by
+name):
 
 ```yaml
 apiVersion: kabr.dev/v1alpha1
@@ -251,47 +260,48 @@ kind: DomainPlan
 metadata:
   name: pagila
 spec:
-  source:
-    dialect: postgres
-    database: pagila
-    catalogFingerprint: sha256:...
   domains:
-    - name: film
-      tables:
-        - name: public.actor
-        - name: public.category
-        - name: public.film
-        - name: public.film_actor
-          role: junction
-        - name: public.film_category
-          role: junction
-        - name: public.inventory
-        - name: public.language
-          role: lookup
-    - name: store
-      tables:
-        - name: public.address
-        - name: public.customer
-        - name: public.payment
-        - name: public.rental
-        - name: public.staff
-        - name: public.store
-      sensitiveColumns:
-        - table: public.staff
-          column: password
-          class: credential
-          action: drop
-          source: heuristic
-        # ...
-    - name: city
-      tables:
-        - name: public.city
-        - name: public.country
+  - # ... description, rationale
+    name: city
+    tables:
+    - name: public.city
+      role: core
+    - name: public.country
+      role: core
+  - # ... description, rationale
+    name: film
+    # ... sensitiveColumns (actor first_name, last_name)
+    tables:
+    - name: public.actor
+      role: core
+    # ... category, film, film_actor (junction), film_category (junction),
+    # ... inventory (core)
+    - name: public.language
+      role: lookup
+  - # ... description, rationale
+    name: store
+    sensitiveColumns:
+    # ... address, customer, payment and staff columns
+    - action: drop
+      class: credential
+      column: password
+      source: heuristic
+      table: public.staff
+    # ...
+    tables:
+    - name: public.address
+      role: core
+    # ... customer, payment, rental, staff, store (all core)
+  source:
+    catalogFingerprint: sha256:8123ea29... # ...
+    database: pagila
+    dialect: postgres
+    schemaVersion: kabr.dev/v1alpha1
 status:
-  phase: Proposed
   generator:
     mode: graph
     modularity: 0.4087
+  phase: Proposed
 ```
 
 ### Pagila evaluation
@@ -419,7 +429,9 @@ make build              # bin/kabr, version from git describe
 
 Linters and scanners run through `go run module@version`, pinned to the same
 versions as CI, so nothing has to be installed globally. CI runs lint, unit
-and integration tests and `govulncheck` on every push and pull request.
+and integration tests, `make eval-pagila` (the graph-only Pagila eval with
+its pinned regression floors; no LLM call, no credentials) and `govulncheck`
+on every push and pull request.
 
 Design decisions are recorded as ADRs:
 [0001 Go, single module](docs/adr/0001-go-single-module.md),

@@ -103,8 +103,14 @@ do not use a hosted provider.
 - `--llm ollama`: a local model through Ollama
   (`KABR_OLLAMA_URL`, default `http://127.0.0.1:11434`).
 - `--llm anthropic` sends the metadata above to the Anthropic API.
-  Credentials are read by the official SDK from `ANTHROPIC_API_KEY` or
-  `ANTHROPIC_AUTH_TOKEN`; Kabr never stores or logs them.
+  Credentials are resolved by the official SDK: `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`, an `ant auth login` profile, or workload identity
+  federation environment variables. Kabr never stores or logs them. (Without
+  `--llm`, the CLI picks `anthropic` only when `ANTHROPIC_API_KEY` or
+  `ANTHROPIC_AUTH_TOKEN` is set.)
+- `ANTHROPIC_BASE_URL`, read by the SDK, redirects where that metadata is
+  sent. Whoever runs Kabr must trust whatever endpoint it points to (a
+  proxy or gateway sees the same metadata the Anthropic API would).
 
 **Model output is untrusted.** Answers are constrained with a JSON Schema
 and then decoded strictly (exact keys, enum values). Every proposed rename,

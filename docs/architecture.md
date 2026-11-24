@@ -194,17 +194,21 @@ flowchart TD
     base["pkg/planner baseline<br/>domains named after anchor table<br/>heuristic sensitive columns"]
     ref{"--llm<br/>anthropic | ollama | none"}
     llm["pkg/llm Refiner<br/>renames, descriptions,<br/>table moves, classifications"]
-    apply["plan.Apply + Validate<br/>invalid items skipped,<br/>invalid result ⇒ baseline"]
+    apply["plan.Apply + Validate<br/>invalid items skipped,<br/>invalid result ⇒ error"]
+    fallback["planner.Generate fallback<br/>keep baseline + warning"]
     out["DomainPlan YAML<br/>phase: Proposed"]
-    approve{{"kabr plan approve --by NAME"}}
+    approve{{"kabr plan approve --by NAME<br/>(re-validates against a catalog)"}}
     approved["DomainPlan<br/>phase: Approved"]
     op["M3 operator (future)"]
 
     cat --> seg --> base --> ref
-    ref -- "none" --> apply
+    ref -- "none (no refiner, no Apply)" --> out
     ref -- "anthropic / ollama" --> llm --> apply
-    base -. "fallback on any<br/>provider or apply error" .-> apply
-    apply --> out --> approve --> approved -.-> op
+    llm -. "provider error" .-> fallback
+    apply -- "valid" --> out
+    apply -. "error" .-> fallback
+    fallback --> out
+    out --> approve --> approved -.-> op
 ```
 
 1. **Catalog.** Either an M1 `schema.json` (`--catalog`) or a live
@@ -220,16 +224,22 @@ flowchart TD
    baseline is always valid.
 4. **Refine (optional).** A `Refiner` proposes a `plan.Refinement`.
    `plan.Apply` checks every item against the catalog, skips invalid ones
-   with a warning, and returns the baseline with a warning if the result does
-   not validate or the provider fails.
+   with a warning, and returns an error if the result does not validate.
+   The fallback lives in `planner.Generate`: on a provider error or an
+   `Apply` error it keeps the baseline and adds a warning. With
+   `--llm none` no refiner runs and `Apply` is not called.
 5. **Validate.** Strict decoding (exact-case keys, single YAML document,
    unknown fields rejected); every catalog table in exactly one domain;
    DNS-1123 domain names; sensitive columns exist and belong to their
    domain; the structural catalog fingerprint (sha256, ignoring statistics
    and comments) matches. Any change made through `Apply` resets approval.
-6. **Approve.** `kabr plan approve FILE --by NAME` re-validates the plan and
-   sets `status.phase: Approved` with `approvedBy` and `approvedAt`. The M3
-   operator will consume approved plans only.
+6. **Approve.** `kabr plan approve FILE --by NAME` always re-validates the
+   plan against a catalog, which is required (`--catalog`, `--dsn` or
+   `KABR_DSN`): structure, coverage of every catalog table and the catalog
+   fingerprint. Only a valid plan gets `status.phase: Approved` with
+   `approvedBy` and `approvedAt`; otherwise it exits 1 and leaves the file
+   untouched. `kabr plan validate` without a catalog checks the structure
+   only. The M3 operator will consume approved plans only.
 
 ### Trust boundaries
 

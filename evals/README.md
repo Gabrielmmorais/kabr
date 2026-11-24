@@ -7,7 +7,9 @@ the `pkg/eval` package compares a planner's output against it.
 > The gold is human judgement, not ground truth. Reasonable engineers can
 > disagree on where a table belongs, so a perfect score is **not** the goal.
 > What matters is that scores do not regress between planner versions.
-> This harness is the seed of a future CI eval gate.
+> CI runs `make eval-pagila` on every push and pull request: a graph-only
+> Pagila plan (no LLM call) scored against `pagila/gold.yaml`, failing on a
+> table-coverage mismatch or when the pinned regression floors are crossed.
 
 ## Layout
 

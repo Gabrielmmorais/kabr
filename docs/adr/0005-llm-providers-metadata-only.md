@@ -31,11 +31,14 @@ implements it for three providers:
 | `ollama` | Local server, `POST /api/chat` with a JSON-schema `format` | Model `llama3.1`, temperature 0, `KABR_OLLAMA_URL` (default `http://127.0.0.1:11434`) |
 | `none` | No model | Graph-only baseline |
 
-Credentials come from the SDK's own chain (`ANTHROPIC_API_KEY` or
-`ANTHROPIC_AUTH_TOKEN`); Kabr never reads, stores or logs them.
+Credentials come from the SDK's own chain (`ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, an `ant auth login` profile, or workload identity
+federation environment variables); Kabr never stores or logs them. The SDK
+also honours `ANTHROPIC_BASE_URL`, which redirects where catalog metadata is
+sent, so operators must trust whatever endpoint it points to.
 `KABR_LLM_MODEL` overrides the default model. The CLI defaults to
-`anthropic` when credentials are present and otherwise falls back to `none`
-with a notice on stderr.
+`anthropic` when `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set and
+otherwise falls back to `none` with a notice on stderr.
 
 **Structured outputs.** Both providers constrain the answer with the same
 JSON Schema (`output_config.format` of type `json_schema` for Anthropic,
@@ -68,9 +71,12 @@ never appear in the request.
 **Model output is untrusted.** The response is decoded strictly (exact keys,
 enum values checked). `plan.Apply` validates every proposed rename, move
 and classification against the catalog, skips invalid items with a warning,
-and returns the baseline with a warning if the overall result does not
-validate. A refusal or a `max_tokens` stop reason is a provider error, which
-also falls back to the baseline. Context cancellation is the only failure
+and returns an error if the overall result does not validate; it never
+substitutes a plan itself. `planner.Generate` owns the fallback: on that
+error, or on a provider error, it keeps the baseline and adds a warning. A
+refusal or a `max_tokens` stop reason is a provider error, so it also falls
+back to the baseline. With `--llm none` no refiner runs and `Apply` is not
+called. Context cancellation is the only failure
 that aborts the run. In every case the plan is `Proposed` and a human must
 approve it before anything is generated.
 

@@ -58,13 +58,17 @@ its own tests.
    metadata and the baseline and may propose only a `Refinement`: domain
    renames and descriptions, table moves between domains, and sensitive
    column classifications. `plan.Apply` validates every item against the
-   catalog, skips invalid items with a warning, and falls back to the
-   baseline (with a warning) if the refined plan does not validate or the
-   provider fails. The provider design and the privacy rules are in
+   catalog, skips invalid items with a warning, and returns an error if the
+   refined plan does not validate. The fallback lives in `planner.Generate`:
+   when the provider fails or `Apply` returns an error, it keeps the
+   baseline and adds a warning. With `--llm none` no refiner runs and
+   `Apply` is not called. The provider design and the privacy rules are in
    [ADR 0005](0005-llm-providers-metadata-only.md).
 3. **Human approval (`pkg/plan`).** The result is a `DomainPlan` document
    (`kabr.dev/v1alpha1`) in phase `Proposed`. `kabr plan approve --by NAME`
-   moves it to `Approved` after re-validating it. The M3 operator will act
+   moves it to `Approved` only after re-validating it against a catalog,
+   which is required (`--catalog`, `--dsn` or `$KABR_DSN`): structure,
+   coverage of every catalog table and the catalog fingerprint. The M3 operator will act
    only on approved plans. Any change made through `plan.Apply` resets the
    approval.
 
@@ -120,7 +124,9 @@ YAML document, unknown fields rejected.
   default.
 - The heuristic sensitive-column classifier favours recall over precision
   (on Pagila: recall 1.000, class accuracy 1.000, precision 0.733); extra
-  flags are expected to be removed in review or by refinement.
+  flags are expected to be removed by a reviewer editing the plan before
+  approval (a refinement can only add or replace sensitive columns, never
+  remove them).
 - γ is a real knob with no universally right value; operators may need to
   tune it per database.
 - A gold-standard refiner reaches F1 = ARI = 1 in tests, which proves that

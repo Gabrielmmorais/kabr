@@ -58,7 +58,7 @@ Subcommands:
   generate   Generate a plan from a catalog file or a live database
   show       Print a plan as a readable summary, YAML or JSON
   validate   Check a plan (against a catalog when one is given)
-  approve    Validate a plan and mark it Approved
+  approve    Validate a plan against a catalog and mark it Approved
   eval       Score a plan against a human-curated gold standard
 
 Run "kabr help plan <subcommand>" for the flags of a subcommand.
@@ -655,14 +655,15 @@ type approveFlags struct {
 	out string
 }
 
-const approveUsage = `Usage: kabr plan approve FILE --by NAME [--catalog FILE | --dsn DSN] [--out FILE]
+const approveUsage = `Usage: kabr plan approve FILE --by NAME (--catalog FILE | --dsn DSN) [--out FILE]
 
 Mark a plan Approved: set status.phase, status.approvedBy and
-status.approvedAt (UTC, whole seconds). The plan is validated first: its
-structure always, and against the catalog when one is given (--catalog,
---dsn or $` + DSNEnv + `). An invalid plan is refused (exit 1) and the file
-is left untouched. The approved plan replaces FILE atomically, or goes to
---out ("-" for stdout).
+status.approvedAt (UTC, whole seconds). Approval always re-validates the
+plan against a catalog first (--catalog, --dsn or $` + DSNEnv + `; one is
+required): its structure, that it covers every catalog table, and that its
+catalog fingerprint matches. An invalid plan is refused (exit 1) and the
+file is left untouched. The approved plan replaces FILE atomically, or goes
+to --out ("-" for stdout).
 `
 
 func newApproveFlags() (*flag.FlagSet, any) {
@@ -689,20 +690,19 @@ func runPlanApprove(ctx context.Context, env *Env, pos []string, fv any) error {
 	if err != nil {
 		return err
 	}
+	if !hasCatalog {
+		return usageErr("approve needs a catalog to check the plan against: pass --catalog FILE or --dsn (or set %s)", DSNEnv)
+	}
 	p, err := readPlanFile(file)
 	if err != nil {
 		return err
 	}
-	if hasCatalog {
-		var cat *schema.Catalog
-		if cat, err = f.src.load(ctx, env); err != nil {
-			return err
-		}
-		if err = p.Validate(cat); err != nil {
-			return invalidPlan(env, p, cat, err)
-		}
-	} else {
-		fmt.Fprintln(env.Stderr, noCatalogNotice)
+	cat, err := f.src.load(ctx, env)
+	if err != nil {
+		return err
+	}
+	if err = p.Validate(cat); err != nil {
+		return invalidPlan(env, p, cat, err)
 	}
 	if err = plan.Approve(p, by, env.Now()); err != nil {
 		return invalidPlan(env, p, nil, err)
