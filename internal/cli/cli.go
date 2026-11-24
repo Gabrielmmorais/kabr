@@ -117,6 +117,8 @@ Commands:
                as canonical JSON, a Mermaid ER diagram or Graphviz DOT
   plan         Generate, show, validate, approve and evaluate a domain
                plan (subcommands: generate, show, validate, approve, eval)
+  serve        Serve one domain of an approved plan as a read-only REST
+               API with OpenAPI, row limits and column masking
   version      Print the kabr version
   help         Show help for kabr or for a command
 
@@ -143,6 +145,8 @@ func Run(ctx context.Context, args []string, env Env) int {
 		err = runIntrospect(ctx, rest, &env)
 	case "plan":
 		err = runPlan(ctx, rest, &env)
+	case "serve":
+		err = runServe(ctx, rest, &env)
 	case "version", "--version", "-version":
 		if len(rest) > 0 {
 			err = usageErr("version takes no arguments")
@@ -166,6 +170,9 @@ func runHelp(args []string, env *Env) error {
 		printIntrospectUsage(env.Stdout, fs)
 	case len(args) >= 1 && args[0] == "plan":
 		return planHelp(args[1:], env)
+	case len(args) == 1 && args[0] == "serve":
+		fs, _ := newServeFlags()
+		printServeUsage(env.Stdout, fs)
 	case len(args) == 1 && args[0] == "version":
 		fmt.Fprintln(env.Stdout, "Usage: kabr version\n\nPrint the kabr version.")
 	case len(args) == 1 && args[0] == "help":
