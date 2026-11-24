@@ -1,0 +1,55 @@
+apiVersion: kabr.dev/v1alpha1
+kind: DomainPlan
+metadata:
+  name: shop
+spec:
+  domains:
+  - name: catalog
+    tables:
+    - name: public.actor
+      role: core
+    - name: public.film
+      role: core
+    - name: public.film_actor
+      role: junction
+  - description: Customer accounts
+    name: customers
+    rationale: connected component around customer
+    sensitiveColumns:
+    - action: mask
+      class: pii
+      column: email
+      source: heuristic
+      table: public.customer
+    - action: drop
+      class: credential
+      column: password_hash
+      source: heuristic
+      table: public.customer
+    tables:
+    - name: public.address
+      role: lookup
+      shared: true
+    - name: public.customer
+      role: core
+  - name: rentals
+    sensitiveColumns:
+    - action: mask
+      class: financial
+      column: amount
+      table: public.rental
+    tables:
+    - name: public.rental
+      role: core
+  source:
+    catalogFingerprint: sha256:1571a46094fb57aec79e6261e110b94312da503b1b45fde89403c75c391c113d
+    database: shop
+    dialect: postgres
+    schemaVersion: kabr.dev/v1alpha1
+status:
+  approvedAt: "2026-11-23T12:30:45Z"
+  approvedBy: alice@example.com
+  generator:
+    mode: graph
+    modularity: 0.42
+  phase: Approved

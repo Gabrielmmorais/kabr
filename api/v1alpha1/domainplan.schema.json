@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kabr.dev/schemas/v1alpha1/domainplan.schema.json",
+  "title": "DomainPlan",
+  "description": "Kabr DomainPlan (kabr.dev/v1alpha1): a reviewable grouping of the tables of one database catalog into business domains. Optional enum fields (role, source, phase, mode) accept the empty string, which means the same as omitting the field, matching the Go validator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "kabr.dev/v1alpha1" },
+    "kind": { "const": "DomainPlan" },
+    "metadata": { "$ref": "#/$defs/Metadata" },
+    "spec": { "$ref": "#/$defs/Spec" },
+    "status": { "$ref": "#/$defs/Status" }
+  },
+  "$defs": {
+    "DNSLabel": {
+      "type": "string",
+      "maxLength": 63,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
+    "DNSSubdomain": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+    },
+    "TableID": {
+      "description": "Table identifier of the form schema.table.",
+      "type": "string",
+      "pattern": "^[^.]*\\S[^.]*\\..*\\S.*$"
+    },
+    "Metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/DNSSubdomain" },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "Spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "domains"],
+      "properties": {
+        "source": { "$ref": "#/$defs/Source" },
+        "domains": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/Domain" }
+        }
+      }
+    },
+    "Source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dialect", "database", "schemaVersion", "catalogFingerprint"],
+      "properties": {
+        "dialect": { "type": "string", "minLength": 1 },
+        "database": { "type": "string", "minLength": 1 },
+        "schemaVersion": { "type": "string" },
+        "catalogFingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "Domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "tables"],
+      "properties": {
+        "name": { "$ref": "#/$defs/DNSLabel" },
+        "description": { "type": "string" },
+        "tables": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/TableAssignment" }
+        },
+        "sensitiveColumns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SensitiveColumn" }
+        },
+        "rationale": { "type": "string" }
+      }
+    },
+    "TableAssignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/TableID" },
+        "shared": { "type": "boolean" },
+        "role": { "enum": ["", "core", "lookup", "junction", "orphan"] },
+        "rationale": { "type": "string" }
+      }
+    },
+    "SensitiveColumn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["table", "column", "class", "action"],
+      "properties": {
+        "table": { "$ref": "#/$defs/TableID" },
+        "column": { "type": "string", "minLength": 1 },
+        "class": { "enum": ["pii", "credential", "financial", "other"] },
+        "action": { "enum": ["mask", "drop", "hash"] },
+        "source": { "enum": ["", "heuristic", "llm", "human"] },
+        "rationale": { "type": "string" }
+      }
+    },
+    "Status": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "phase": { "enum": ["", "Proposed", "Approved"] },
+        "approvedBy": { "type": "string" },
+        "approvedAt": { "type": "string", "format": "date-time" },
+        "generator": { "$ref": "#/$defs/Generator" },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "if": {
+        "properties": { "phase": { "const": "Approved" } },
+        "required": ["phase"]
+      },
+      "then": {
+        "required": ["approvedBy", "approvedAt"],
+        "properties": { "approvedBy": { "minLength": 1 } }
+      }
+    },
+    "Generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["", "graph", "llm"] },
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "modularity": { "type": "number" }
+      }
+    }
+  }
+}
