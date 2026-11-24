@@ -14,6 +14,9 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
+	"github.com/Gabrielmmorais/kabr/api/v1alpha1"
 	"github.com/Gabrielmmorais/kabr/pkg/eval"
 	"github.com/Gabrielmmorais/kabr/pkg/introspect"
 	"github.com/Gabrielmmorais/kabr/pkg/llm"
@@ -59,6 +62,7 @@ Subcommands:
   show       Print a plan as a readable summary, YAML or JSON
   validate   Check a plan (against a catalog when one is given)
   approve    Validate a plan against a catalog and mark it Approved
+  manifest   Print the DomainPlan custom resource of an approved plan
   eval       Score a plan against a human-curated gold standard
 
 Run "kabr help plan <subcommand>" for the flags of a subcommand.
@@ -78,6 +82,7 @@ var planCommands = []planCommand{
 	{"show", showUsage, newShowFlags, runPlanShow},
 	{"validate", validateUsage, newValidateFlags, runPlanValidate},
 	{"approve", approveUsage, newApproveFlags, runPlanApprove},
+	{"manifest", manifestUsage, newManifestFlags, runPlanManifest},
 	{"eval", evalUsage, newEvalFlags, runPlanEval},
 }
 
@@ -427,9 +432,10 @@ type showFlags struct{ format string }
 
 const showUsage = `Usage: kabr plan show FILE [--format table|yaml|json]
 
-Print a plan. "table" (default) is a readable summary: the review status,
-the generator, the warnings and, per domain, its tables (with role and
-shared markers) and sensitive columns (table.column class -> action).
+Print a plan. "table" (default) is a readable summary: the review status
+(with the approval digest and whether the spec still matches it), the
+generator, the warnings and, per domain, its tables (with role and shared
+markers) and sensitive columns (table.column class -> action).
 "yaml" is the canonical plan encoding; "json" the same document as JSON.
 The plan is decoded strictly but not validated (see "kabr plan validate").
 `
@@ -516,6 +522,7 @@ func planTable(p *plan.DomainPlan) ([]byte, error) {
 	fmt.Fprintf(hw, "Phase:\t%s\n", orDash(string(st.Phase)))
 	fmt.Fprintf(hw, "Approved by:\t%s\n", orDash(st.ApprovedBy))
 	fmt.Fprintf(hw, "Approved at:\t%s\n", approvedAt)
+	fmt.Fprintf(hw, "Digest:\t%s\n", digestLabel(p))
 	fmt.Fprintf(hw, "Generator:\t%s\n", generatorLabel(st.Generator))
 	fmt.Fprintf(hw, "Modularity:\t%s\n", modularity)
 	fmt.Fprintf(hw, "Totals:\t%d domains, %d tables, %d sensitive columns\n", len(p.Spec.Domains), tables, sensitive)
@@ -571,6 +578,23 @@ func planTable(p *plan.DomainPlan) ([]byte, error) {
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
+// digestLabel renders status.approvalDigest for "plan show": the digest and,
+// for an approved plan, whether the current spec still matches it.
+func digestLabel(p *plan.DomainPlan) string {
+	d := p.Status.ApprovalDigest
+	if p.Status.Phase != plan.PhaseApproved {
+		return orDash(d)
+	}
+	switch err := plan.VerifyApproval(p); {
+	case d == "":
+		return "- (missing: approved before approval digests existed; re-approve)"
+	case errors.Is(err, plan.ErrEditedAfterApproval):
+		return d + " (MISMATCH: spec edited after approval; re-approve)"
+	default:
+		return d + " (matches the spec)"
+	}
+}
+
 // --- validate ------------------------------------------------------------------
 
 type validateFlags struct{ src catalogFlags }
@@ -581,7 +605,9 @@ Check a plan. With a catalog (--catalog, --dsn or $` + DSNEnv + `) the plan
 is fully validated against it: every table assigned exactly once, no
 unknown table or column, and the catalog fingerprint must match (a plan
 generated for another catalog, or a catalog that changed since, fails).
-Without a catalog only the structure of the plan is checked.
+Without a catalog only the structure of the plan is checked. Either way an
+Approved plan must still match its approval digest: a spec edited after
+approval (anything but reordering) fails and must be re-approved.
 
 On success prints "plan <name> is valid ..." and exits 0; otherwise prints
 every problem to stderr and exits 1.
@@ -657,8 +683,12 @@ type approveFlags struct {
 
 const approveUsage = `Usage: kabr plan approve FILE --by NAME (--catalog FILE | --dsn DSN) [--out FILE]
 
-Mark a plan Approved: set status.phase, status.approvedBy and
-status.approvedAt (UTC, whole seconds). Approval always re-validates the
+Mark a plan Approved: set status.phase, status.approvedBy,
+status.approvedAt (UTC, whole seconds) and status.approvalDigest (sha256
+of the canonical spec; any later edit of the spec invalidates the
+approval). Re-approving an approved plan replaces its approval, so a plan
+edited after approval is approved again once reviewed. Approval always
+re-validates the
 plan against a catalog first (--catalog, --dsn or $` + DSNEnv + `; one is
 required): its structure, that it covers every catalog table, and that its
 catalog fingerprint matches. An invalid plan is refused (exit 1) and the
@@ -701,7 +731,9 @@ func runPlanApprove(ctx context.Context, env *Env, pos []string, fv any) error {
 	if err != nil {
 		return err
 	}
-	if err = p.Validate(cat); err != nil {
+	// Validate the plan as a proposal: a previous approval, even a stale one
+	// (spec edited after approval, or no digest), is replaced, not checked.
+	if err = p.WithoutApproval().Validate(cat); err != nil {
 		return invalidPlan(env, p, cat, err)
 	}
 	if err = plan.Approve(p, by, env.Now()); err != nil {
@@ -724,6 +756,74 @@ func runPlanApprove(ctx context.Context, env *Env, pos []string, fv any) error {
 	fmt.Fprintf(env.Stderr, "kabr: plan %s approved by %s at %s -> %s\n",
 		p.Metadata.Name, by, p.Status.ApprovedAt.UTC().Format(time.RFC3339), dest)
 	return nil
+}
+
+// --- manifest ------------------------------------------------------------------
+
+type manifestFlags struct {
+	dataSource string
+	namespace  string
+	out        string
+}
+
+const manifestUsage = `Usage: kabr plan manifest FILE --datasource NAME [--namespace NS] [--out FILE]
+
+Print the DomainPlan custom resource (` + v1alpha1.Group + `/` + v1alpha1.Version + `) of an
+APPROVED plan, ready for "kubectl apply -f": metadata.name is the plan
+name, spec holds the plan's source and domains unchanged plus
+spec.dataSourceRef (--datasource, a DataSource in the same namespace) and
+spec.approval (approver, time and approval digest), which the operator
+verifies again before serving anything.
+
+A plan that is not Approved, or whose spec no longer matches its approval
+digest (edited after approval, or approved before digests existed), is
+refused with exit 1 and nothing is written. The manifest goes to stdout or
+--out (written atomically).
+`
+
+func newManifestFlags() (*flag.FlagSet, any) {
+	f := &manifestFlags{}
+	fs := flag.NewFlagSet("plan manifest", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&f.dataSource, "datasource", "", "name of the DataSource the plan reads from, a DNS-1123 subdomain (required)")
+	fs.StringVar(&f.namespace, "namespace", "", "metadata.namespace of the resource, a DNS-1123 label (default unset: kubectl -n decides)")
+	fs.StringVar(&f.out, "out", "", "write the manifest to this file atomically (default stdout)")
+	return fs, f
+}
+
+func runPlanManifest(_ context.Context, env *Env, pos []string, fv any) error {
+	f := fv.(*manifestFlags)
+	file, err := oneFile("manifest", pos)
+	if err != nil {
+		return err
+	}
+	switch {
+	case f.dataSource == "":
+		return usageErr("plan manifest: --datasource is required")
+	case !plan.IsDNSSubdomain(f.dataSource):
+		return usageErr("plan manifest: --datasource %q is not a valid DNS-1123 subdomain", introspect.RedactText(f.dataSource))
+	case f.namespace != "" && !plan.IsDNSLabel(f.namespace):
+		return usageErr("plan manifest: --namespace %q is not a valid DNS-1123 label", introspect.RedactText(f.namespace))
+	}
+	p, err := readPlanFile(file)
+	if err != nil {
+		return err
+	}
+	if err = p.ValidateStructure(); err != nil {
+		return invalidPlan(env, p, nil, err)
+	}
+	if err = plan.VerifyApproval(p); err != nil {
+		return err
+	}
+	cr, err := v1alpha1.DomainPlanFromPlan(p, f.namespace, f.dataSource)
+	if err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cr)
+	if err != nil {
+		return fmt.Errorf("encode manifest: %w", err)
+	}
+	return writeOutput(env, f.out, data)
 }
 
 // --- eval ----------------------------------------------------------------------

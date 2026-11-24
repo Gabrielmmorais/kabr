@@ -1,0 +1,23 @@
+# A DataSource for the Pagila demo database. It references the Secret
+# "pagila-reader" (key "dsn") holding the DSN of a READ-ONLY role; create that
+# Secret yourself (never commit it), for example from a file:
+#   kubectl create secret generic pagila-reader -n kabr-demo --from-file=dsn=./dsn.txt
+apiVersion: kabr.dev/v1alpha1
+kind: DataSource
+metadata:
+  name: pagila-db
+  namespace: kabr-demo
+spec:
+  driver: postgres
+  secretRef:
+    name: pagila-reader
+    key: dsn
+  network:
+    port: 5432
+    # The database pods, for a database running in the cluster ...
+    podSelector:
+      matchLabels:
+        app: postgres
+    # ... or its address blocks, for a database outside the cluster:
+    # cidrs:
+    #   - 10.0.12.0/24

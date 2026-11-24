@@ -1,0 +1,37 @@
+# Kabr operator for the local kind cluster: the default install
+# (config/default: namespace kabr-system, CRDs, RBAC, Deployment
+# kabr-operator) with the locally built image kabr:dev, which
+# `make kind-load` puts on the kind node (never pulled from a registry).
+#
+#   make demo-operator   # == kubectl --kubeconfig ... --context kind-kabr apply -k deploy/kind/operator
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../config/default
+# Operator image. Keep newName/newTag in sync with IMG in the Makefile.
+images:
+  - name: kabr
+    newName: kabr
+    newTag: dev
+# Default image of the DomainAPI pods: the operator reads KABR_RUNTIME_IMAGE
+# from this ConfigMap (key runtimeImage), so the runtimes use the same local
+# image as the operator.
+configMapGenerator:
+  - name: kabr-operator-config
+    namespace: kabr-system
+    behavior: replace
+    literals:
+      - runtimeImage=kabr:dev
+patches:
+  # The image only exists on the kind node: never pull it. JSON patch "test"
+  # first, so the build fails loudly if the base renames its container.
+  - target:
+      kind: Deployment
+      name: kabr-operator
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/name
+        value: operator
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent

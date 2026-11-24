@@ -66,7 +66,11 @@ func isTableID(s string) bool {
 //   - sensitive columns reference a table listed in the same domain, have a
 //     column name, a valid class, action and source, and are not duplicated;
 //   - status.phase and status.generator.mode are valid; an approved plan has
-//     approvedBy and approvedAt.
+//     approvedBy, approvedAt and an approvalDigest equal to [SpecDigest] of
+//     the spec. A missing digest wraps [ErrApprovalDigestMissing] (approved
+//     before digests existed: re-approve), a different one wraps
+//     [ErrEditedAfterApproval] (the spec was edited after approval).
+//     Reordering domains, tables or sensitive columns is not an edit.
 //
 // Optional enums (role, source, phase, generator mode) accept "" as "unset",
 // exactly like the published JSON Schema, which lists "" in those enums.
@@ -160,6 +164,14 @@ func (p *DomainPlan) ValidateStructure() error {
 		}
 		if st.ApprovedAt == nil || st.ApprovedAt.IsZero() {
 			add("status.approvedAt: required when phase is Approved")
+		}
+		switch current, problem := approvalDigestProblem(st, p.Spec); {
+		case problem == nil:
+		case errors.Is(problem, ErrApprovalDigestMissing):
+			errs = append(errs, fmt.Errorf("status.approvalDigest: %w: required when phase is Approved; %s", problem, reapproveHint))
+		default:
+			errs = append(errs, fmt.Errorf("status.approvalDigest: %w: the spec now hashes to %q, not the approved %q; review the changes and %s",
+				problem, current, st.ApprovalDigest, reapproveHint))
 		}
 	}
 	if !validGenModes[st.Generator.Mode] {

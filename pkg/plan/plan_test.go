@@ -97,6 +97,13 @@ func smallPlan(c *schema.Catalog) *DomainPlan {
 	return p
 }
 
+func mustApprove(t *testing.T, p *DomainPlan) {
+	t.Helper()
+	if err := Approve(p, "alice", time.Date(2026, 11, 24, 8, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func mustValid(t *testing.T, p *DomainPlan, c *schema.Catalog) {
 	t.Helper()
 	if err := p.Validate(c); err != nil {
@@ -268,6 +275,27 @@ func TestValidateStructure(t *testing.T) {
 		{"valid subdomain name", func(p *DomainPlan) { p.Metadata.Name = "shop.prod-1" }, nil},
 		{"approved valid", func(p *DomainPlan) {
 			p.Status.Phase, p.Status.ApprovedBy, p.Status.ApprovedAt = PhaseApproved, "bob", &now
+			p.Status.ApprovalDigest = SpecDigest(p.Spec)
+		}, nil},
+		{"approved, then only reordered", func(p *DomainPlan) {
+			mustApprove(t, p)
+			slices.Reverse(p.Spec.Domains)
+			slices.Reverse(p.Spec.Domains[2].Tables)
+			slices.Reverse(p.Spec.Domains[2].SensitiveColumns)
+		}, nil},
+		{"approved before digests existed", func(p *DomainPlan) {
+			p.Status.Phase, p.Status.ApprovedBy, p.Status.ApprovedAt = PhaseApproved, "bob", &now
+		}, []string{"status.approvalDigest: plan was approved before approval digests existed: required when phase is Approved", `re-approve it with "kabr plan approve"`}},
+		{"approved, then edited", func(p *DomainPlan) {
+			mustApprove(t, p)
+			p.Spec.Domains[0].SensitiveColumns[0].Action = ActionMask
+		}, []string{"status.approvalDigest: approved plan was edited after approval", "review the changes"}},
+		{"approved with malformed digest", func(p *DomainPlan) {
+			mustApprove(t, p)
+			p.Status.ApprovalDigest = "md5:abc"
+		}, []string{"status.approvalDigest: approved plan was edited after approval", `"md5:abc"`}},
+		{"proposed with stale digest is unaffected", func(p *DomainPlan) {
+			p.Status.ApprovalDigest = "sha256:" + strings.Repeat("0", 64)
 		}, nil},
 		{"wrong apiVersion and kind", func(p *DomainPlan) { p.APIVersion, p.Kind = "v1", "Plan" }, []string{"apiVersion:", "kind:"}},
 		{"bad metadata name", func(p *DomainPlan) { p.Metadata.Name = "Shop_DB" }, []string{"metadata.name"}},
@@ -558,7 +586,13 @@ func TestApprove(t *testing.T) {
 	if p.Status.Phase != PhaseApproved || p.Status.ApprovedBy != "alice" || !p.Status.ApprovedAt.Equal(want) || p.Status.ApprovedAt.Location() != time.UTC {
 		t.Fatalf("unexpected status: %+v at %v", p.Status, p.Status.ApprovedAt)
 	}
+	if p.Status.ApprovalDigest != SpecDigest(p.Spec) || !fingerprintRE.MatchString(p.Status.ApprovalDigest) {
+		t.Fatalf("approval digest = %q, want %q", p.Status.ApprovalDigest, SpecDigest(p.Spec))
+	}
 	mustValid(t, p, c)
+	if err := VerifyApproval(p); err != nil {
+		t.Fatalf("freshly approved plan does not verify: %v", err)
+	}
 
 	later := at.Add(time.Hour)
 	if err := Approve(p, "bob", later); err != nil {
@@ -566,6 +600,36 @@ func TestApprove(t *testing.T) {
 	}
 	if p.Status.ApprovedBy != "bob" || !p.Status.ApprovedAt.Equal(want.Add(time.Hour)) {
 		t.Fatalf("re-approve did not update: %+v", p.Status)
+	}
+
+	// An approved plan edited afterwards can be re-approved: the digest
+	// follows the new spec.
+	p.Spec.Domains[1].Description = "edited after approval"
+	if err := VerifyApproval(p); !errors.Is(err, ErrEditedAfterApproval) {
+		t.Fatalf("edited plan: err = %v, want ErrEditedAfterApproval", err)
+	}
+	if err := Approve(p, "carol", later); err != nil {
+		t.Fatalf("re-approving an edited plan: %v", err)
+	}
+	if err := VerifyApproval(p); err != nil {
+		t.Fatalf("re-approved plan does not verify: %v", err)
+	}
+
+	// WithoutApproval: a proposal copy that validates despite a stale digest.
+	p.Spec.Domains[1].Description = "edited again"
+	if p.ValidateStructure() == nil {
+		t.Fatal("stale approval should fail ValidateStructure")
+	}
+	w := p.WithoutApproval()
+	if w.Status.Phase != PhaseProposed || w.Status.ApprovedBy != "" || w.Status.ApprovedAt != nil || w.Status.ApprovalDigest != "" {
+		t.Fatalf("WithoutApproval status = %+v", w.Status)
+	}
+	if p.Status.Phase != PhaseApproved || p.Status.ApprovalDigest == "" {
+		t.Fatal("WithoutApproval mutated its receiver")
+	}
+	mustValid(t, w, c)
+	if (*DomainPlan)(nil).WithoutApproval() != nil {
+		t.Fatal("nil plan should give nil")
 	}
 }
 
@@ -734,7 +798,7 @@ func TestApply(t *testing.T) {
 					t.Errorf("warnings[%d] = %q, want substring %q", i, warnings[i], w)
 				}
 			}
-			if out.Status.Phase != PhaseProposed || out.Status.ApprovedBy != "" || out.Status.ApprovedAt != nil {
+			if out.Status.Phase != PhaseProposed || out.Status.ApprovedBy != "" || out.Status.ApprovedAt != nil || out.Status.ApprovalDigest != "" {
 				t.Fatalf("approval not reset: %+v", out.Status)
 			}
 			mustValid(t, out, c)

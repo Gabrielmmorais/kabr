@@ -1,0 +1,18 @@
+# Build context of the root Dockerfile: only what `go build ./cmd/kabr`
+# needs reaches the daemon. Never secrets, downloaded data or VCS metadata.
+.git
+.github
+.deep-orchestrator
+.deep-orchestrator-preferences
+bin
+dist
+deploy/compose/data
+**/*.env*
+**/.env*
+*.dump
+*.test
+*.out
+coverage*
+EXPLAINER.html
+Dockerfile
+.dockerignore

@@ -1,0 +1,18 @@
+# Leader election of "kabr operator --leader-elect": the Lease
+# kabr-operator.kabr.dev in the operator's own namespace, plus the events
+# client-go records about it. Namespaced on purpose (not in the ClusterRole).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kabr-operator-leader-election
+  namespace: kabr-system
+  labels:
+    app.kubernetes.io/name: kabr-operator
+    app.kubernetes.io/managed-by: kustomize
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]

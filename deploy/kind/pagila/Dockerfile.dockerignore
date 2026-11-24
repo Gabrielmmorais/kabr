@@ -1,0 +1,7 @@
+# Context is deploy/compose: send only the initdb scripts and the fetched
+# Pagila SQL, never .env.demo (random demo passwords) or anything else.
+*
+!initdb/10-pagila.sh
+!initdb/20-kabr-roles.sh
+!data/pagila-schema.sql
+!data/pagila-data.sql

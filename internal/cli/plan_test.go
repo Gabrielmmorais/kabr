@@ -8,10 +8,14 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
+	"github.com/Gabrielmmorais/kabr/api/v1alpha1"
 	"github.com/Gabrielmmorais/kabr/pkg/introspect"
 	"github.com/Gabrielmmorais/kabr/pkg/llm"
 	"github.com/Gabrielmmorais/kabr/pkg/plan"
@@ -121,6 +125,32 @@ func writePlan(t *testing.T, mutate func(p *plan.DomainPlan)) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// approvedPlanFile writes the Pagila plan approved by alice at fixedNow and
+// returns its path and its approval digest.
+func approvedPlanFile(t *testing.T) (path, digest string) {
+	t.Helper()
+	path = writePlan(t, func(p *plan.DomainPlan) {
+		if err := plan.Approve(p, "alice", fixedNow); err != nil {
+			t.Fatal(err)
+		}
+		digest = p.Status.ApprovalDigest
+	})
+	return path, digest
+}
+
+// editFile replaces the first old with replacement in the file, failing
+// when old is absent.
+func editFile(t *testing.T, path, old, replacement string) {
+	t.Helper()
+	data := readFile(t, path)
+	if !strings.Contains(data, old) {
+		t.Fatalf("%s does not contain %q", path, old)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(data, old, replacement, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestPlanGenerateGolden(t *testing.T) {
@@ -331,6 +361,10 @@ func TestPlanUsageErrors(t *testing.T) {
 		{"approve no catalog", nil, []string{"plan", "approve", planFile, "--by", "alice"}, "approve needs a catalog to check the plan against: pass --catalog FILE or --dsn (or set KABR_DSN)"},
 		{"approve both sources", nil, []string{"plan", "approve", planFile, "--by", "alice", "--catalog", "x", "--dsn", testDSN}, "exactly one"},
 		{"eval without --gold", nil, []string{"plan", "eval", planFile}, "--gold is required"},
+		{"manifest no file", nil, []string{"plan", "manifest", "--datasource", "db"}, "missing FILE"},
+		{"manifest without --datasource", nil, []string{"plan", "manifest", planFile}, "--datasource is required"},
+		{"manifest bad --datasource", nil, []string{"plan", "manifest", planFile, "--datasource", "Pagila_DB"}, `--datasource "Pagila_DB" is not a valid DNS-1123 subdomain`},
+		{"manifest bad --namespace", nil, []string{"plan", "manifest", planFile, "--datasource", "db", "--namespace", "a.b"}, `--namespace "a.b" is not a valid DNS-1123 label`},
 		{"help unknown subcommand", nil, []string{"help", "plan", "nope"}, "unknown help topic"},
 	}
 	for _, tt := range tests {
@@ -361,6 +395,8 @@ func TestPlanHelp(t *testing.T) {
 		{[]string{"plan", "--help"}, "Subcommands:"},
 		{[]string{"help", "plan", "generate"}, "-resolution"},
 		{[]string{"plan", "approve", "-h"}, "Usage: kabr plan approve"},
+		{[]string{"help", "plan"}, "manifest   Print the DomainPlan custom resource"},
+		{[]string{"help", "plan", "manifest"}, "-datasource"},
 		{[]string{"help"}, "plan         Generate"},
 	} {
 		r := runPlanCLI(t, planEnv{}, tt.args...)
@@ -407,6 +443,7 @@ func TestPlanShow(t *testing.T) {
 		"Plan:        pagila\n",
 		"Phase:       Proposed\n",
 		"Approved by: -\n",
+		"Digest:      -\n",
 		"Generator:   graph\n",
 		"Totals:      3 domains, 15 tables, 15 sensitive columns\n",
 		"Warnings:\n  - something to review\n",
@@ -437,6 +474,28 @@ func TestPlanShow(t *testing.T) {
 	}
 	if p, err := plan.Unmarshal([]byte(r.stdout)); err != nil || p.Metadata.Name != "pagila" {
 		t.Errorf("json does not decode as a plan: %v", err)
+	}
+}
+
+func TestPlanShowApprovalDigest(t *testing.T) {
+	approved, digest := approvedPlanFile(t)
+	legacy, _ := approvedPlanFile(t)
+	editFile(t, legacy, "  approvalDigest: "+digest+"\n", "")
+	edited, _ := approvedPlanFile(t)
+	editFile(t, edited, "      role: core\n", "      role: lookup\n")
+	for _, tt := range []struct {
+		name, path, want string
+	}{
+		{"approved", approved, "Digest:      " + digest + " (matches the spec)\n"},
+		{"edited after approval", edited, "Digest:      " + digest + " (MISMATCH: spec edited after approval; re-approve)\n"},
+		{"approved before digests", legacy, "Digest:      - (missing: approved before approval digests existed; re-approve)\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := runPlanCLI(t, planEnv{}, "plan", "show", tt.path)
+			if r.code != ExitOK || !strings.Contains(r.stdout, tt.want) || !strings.Contains(r.stdout, "Phase:       Approved\n") {
+				t.Errorf("exit %d, stdout lacks %q:\n%s", r.code, tt.want, r.stdout)
+			}
+		})
 	}
 }
 
@@ -491,6 +550,76 @@ func TestPlanValidate(t *testing.T) {
 	}
 }
 
+// TestPlanValidateApprovalDigest: an approved plan edited after approval
+// fails validation (with or without a catalog); reordering does not.
+func TestPlanValidateApprovalDigest(t *testing.T) {
+	approved, digest := approvedPlanFile(t)
+
+	// Reordering domains and tables in the file is not an edit. plan.Marshal
+	// would sort them back, so encode the reordered plan directly.
+	p, err := plan.Unmarshal([]byte(readFile(t, approved)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Reverse(p.Spec.Domains)
+	for i := range p.Spec.Domains {
+		slices.Reverse(p.Spec.Domains[i].Tables)
+		slices.Reverse(p.Spec.Domains[i].SensitiveColumns)
+	}
+	data, err := yaml.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered := filepath.Join(t.TempDir(), "reordered.yaml")
+	if err := os.WriteFile(reordered, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == readFile(t, approved) {
+		t.Fatal("test setup: reordering did not change the file")
+	}
+
+	edited, _ := approvedPlanFile(t)
+	editFile(t, edited, "    - action: mask\n", "    - action: drop\n")
+	legacy, _ := approvedPlanFile(t)
+	editFile(t, legacy, "  approvalDigest: "+digest+"\n", "")
+
+	for _, tt := range []struct {
+		name, path string
+		want       string // "" = valid
+	}{
+		{"approved", approved, ""},
+		{"approved, reordered only", reordered, ""},
+		{"approved, then edited", edited, "  - status.approvalDigest: approved plan was edited after approval: the spec now hashes to"},
+		{"approved before digests existed", legacy, "  - status.approvalDigest: plan was approved before approval digests existed"},
+	} {
+		for _, withCatalog := range []bool{false, true} {
+			args := []string{"plan", "validate", tt.path}
+			if withCatalog {
+				args = append(args, "--catalog", pagilaCatalogPath)
+			}
+			r := runPlanCLI(t, planEnv{}, args...)
+			if tt.want == "" {
+				if r.code != ExitOK {
+					t.Errorf("%s (catalog %v): exit %d stderr:\n%s", tt.name, withCatalog, r.code, r.stderr)
+				}
+				continue
+			}
+			if r.code != ExitError || !strings.Contains(r.stderr, tt.want) || !strings.Contains(r.stderr, `re-approve it with "kabr plan approve"`) {
+				t.Errorf("%s (catalog %v): exit %d stderr:\n%s", tt.name, withCatalog, r.code, r.stderr)
+			}
+		}
+	}
+
+	// Re-approving the edited plan makes it valid again.
+	r := runPlanCLI(t, planEnv{}, "plan", "approve", edited, "--by", "bob", "--catalog", pagilaCatalogPath)
+	if r.code != ExitOK {
+		t.Fatalf("re-approve: exit %d stderr:\n%s", r.code, r.stderr)
+	}
+	if r := runPlanCLI(t, planEnv{}, "plan", "validate", edited); r.code != ExitOK {
+		t.Errorf("re-approved plan: exit %d stderr:\n%s", r.code, r.stderr)
+	}
+}
+
 func TestPlanApprove(t *testing.T) {
 	path := writePlan(t, nil)
 	r := runPlanCLI(t, planEnv{}, "plan", "approve", path, "--by", "alice", "--catalog", pagilaCatalogPath)
@@ -512,6 +641,9 @@ func TestPlanApprove(t *testing.T) {
 	}
 	if err := p.Validate(loadPagilaCatalog(t)); err != nil {
 		t.Errorf("approved plan is invalid: %v", err)
+	}
+	if st.ApprovalDigest != plan.SpecDigest(p.Spec) || plan.VerifyApproval(p) != nil {
+		t.Errorf("approval digest = %q, want %q", st.ApprovalDigest, plan.SpecDigest(p.Spec))
 	}
 
 	// --out leaves FILE alone; "-" writes to stdout.
@@ -561,6 +693,114 @@ func TestPlanApproveNeedsCatalog(t *testing.T) {
 	r = runPlanCLI(t, planEnv{}, "plan", "approve", tampered, "--by", "mallory", "--catalog", pagilaCatalogPath)
 	if r.code != ExitError || !strings.Contains(r.stderr, "catalog mismatch") || readFile(t, tampered) != before {
 		t.Errorf("tampered fingerprint: exit %d stderr:\n%s", r.code, r.stderr)
+	}
+}
+
+func TestPlanManifest(t *testing.T) {
+	approved, digest := approvedPlanFile(t)
+	r := runPlanCLI(t, planEnv{}, "plan", "manifest", approved, "--datasource", "pagila-db", "--namespace", "kabr-demo")
+	if r.code != ExitOK || r.stderr != "" {
+		t.Fatalf("exit %d, stderr:\n%s", r.code, r.stderr)
+	}
+	for _, want := range []string{
+		"apiVersion: kabr.dev/v1alpha1\nkind: DomainPlan\nmetadata:\n  name: pagila\n  namespace: kabr-demo\nspec:\n",
+		"  approval:\n    approvedAt: \"2026-01-02T06:04:05Z\"\n    approvedBy: alice\n    digest: " + digest + "\n",
+		"  dataSourceRef:\n    name: pagila-db\n",
+		"    catalogFingerprint: sha256:",
+	} {
+		if !strings.Contains(r.stdout, want) {
+			t.Errorf("manifest lacks %q:\n%s", want, r.stdout)
+		}
+	}
+	for _, unwanted := range []string{"status:", "creationTimestamp", "rowLimit", "replicas", "generator", "approvalDigest"} {
+		if strings.Contains(r.stdout, unwanted) {
+			t.Errorf("manifest contains %q:\n%s", unwanted, r.stdout)
+		}
+	}
+	var cr v1alpha1.DomainPlan
+	if err := yaml.UnmarshalStrict([]byte(r.stdout), &cr); err != nil {
+		t.Fatalf("manifest does not decode as a DomainPlan: %v", err)
+	}
+	if err := plan.VerifyApproval(cr.ToPlan()); err != nil {
+		t.Fatalf("manifest does not verify: %v", err)
+	}
+	if err := cr.ToPlan().Validate(loadPagilaCatalog(t)); err != nil {
+		t.Fatalf("manifest plan is invalid for the catalog: %v", err)
+	}
+
+	// Deterministic; --out writes the same bytes; no namespace by default.
+	if again := runPlanCLI(t, planEnv{}, "plan", "manifest", "--namespace", "kabr-demo", approved, "--datasource", "pagila-db"); again.stdout != r.stdout {
+		t.Error("manifest is not deterministic")
+	}
+	out := filepath.Join(t.TempDir(), "domainplan.yaml")
+	r2 := runPlanCLI(t, planEnv{}, "plan", "manifest", approved, "--datasource", "pagila-db", "--out", out)
+	if r2.code != ExitOK || r2.stdout != "" || strings.Contains(readFile(t, out), "namespace:") ||
+		readFile(t, out) != strings.Replace(r.stdout, "  namespace: kabr-demo\n", "", 1) {
+		t.Errorf("--out: exit %d stdout %q stderr %q", r2.code, r2.stdout, r2.stderr)
+	}
+}
+
+// TestPlanManifestRefuses: only an approved, unedited plan gets a manifest;
+// everything else exits 1 and writes nothing.
+func TestPlanManifestRefuses(t *testing.T) {
+	_, digest := approvedPlanFile(t)
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) string
+		want  []string
+	}{
+		{"proposed plan", func(t *testing.T) string { return writePlan(t, nil) },
+			[]string{`kabr: plan is not approved: "pagila" has phase Proposed; approve it with "kabr plan approve"`}},
+		{"edited after approval", func(t *testing.T) string {
+			path, _ := approvedPlanFile(t)
+			editFile(t, path, "    - action: mask\n", "    - action: drop\n")
+			return path
+		}, []string{"kabr: plan pagila is invalid:", "  - status.approvalDigest: approved plan was edited after approval"}},
+		{"table moved after approval", func(t *testing.T) string {
+			path, _ := approvedPlanFile(t)
+			editFile(t, path, "    - name: public.country\n", "    - name: public.country2\n")
+			return path
+		}, []string{"edited after approval"}},
+		{"approved before digests existed", func(t *testing.T) string {
+			path, _ := approvedPlanFile(t)
+			editFile(t, path, "  approvalDigest: "+digest+"\n", "")
+			return path
+		}, []string{"plan was approved before approval digests existed", `re-approve it with "kabr plan approve"`}},
+		{"forged digest", func(t *testing.T) string {
+			path, _ := approvedPlanFile(t)
+			editFile(t, path, "  approvalDigest: "+digest+"\n", "  approvalDigest: sha256:"+strings.Repeat("0", 64)+"\n")
+			return path
+		}, []string{"edited after approval"}},
+		{"structurally invalid", func(t *testing.T) string {
+			return writePlan(t, func(p *plan.DomainPlan) { p.Spec.Domains[0].Name = "Bad Name" })
+		}, []string{"  - spec.domains[0].name"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := tt.setup(t)
+			before := readFile(t, path)
+			out := filepath.Join(t.TempDir(), "domainplan.yaml")
+			for _, args := range [][]string{
+				{"plan", "manifest", path, "--datasource", "pagila-db"},
+				{"plan", "manifest", path, "--datasource", "pagila-db", "--out", out},
+			} {
+				r := runPlanCLI(t, planEnv{}, args...)
+				if r.code != ExitError || r.stdout != "" {
+					t.Errorf("%v: exit %d stdout %q", args, r.code, r.stdout)
+				}
+				for _, w := range tt.want {
+					if !strings.Contains(r.stderr, w) {
+						t.Errorf("%v: stderr lacks %q:\n%s", args, w, r.stderr)
+					}
+				}
+			}
+			if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("refused manifest wrote %s (stat err %v)", out, err)
+			}
+			if readFile(t, path) != before {
+				t.Error("refused manifest modified the plan file")
+			}
+		})
 	}
 }
 

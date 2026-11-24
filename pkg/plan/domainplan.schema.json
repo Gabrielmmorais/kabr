@@ -115,6 +115,11 @@
         "phase": { "enum": ["", "Proposed", "Approved"] },
         "approvedBy": { "type": "string" },
         "approvedAt": { "type": "string", "format": "date-time" },
+        "approvalDigest": {
+          "description": "SpecDigest of the spec at approval time (sha256 over its canonical JSON). An approved plan whose spec no longer hashes to it was edited after approval and must be re-approved.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
         "generator": { "$ref": "#/$defs/Generator" },
         "warnings": {
           "type": "array",
@@ -126,7 +131,7 @@
         "required": ["phase"]
       },
       "then": {
-        "required": ["approvedBy", "approvedAt"],
+        "required": ["approvedBy", "approvedAt", "approvalDigest"],
         "properties": { "approvedBy": { "minLength": 1 } }
       }
     },
