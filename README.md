@@ -9,10 +9,11 @@ it into domains, a Kubernetes operator ships one governed REST + MCP API per
 domain.**
 
 > **Status: early development.** Milestones M1 (read-only catalog
-> introspection and the table graph) and M2 (segmentation into a reviewable
-> `DomainPlan`, optional LLM refinement, human approval) are implemented and
-> tested. Everything after them is design and roadmap; this README marks
-> which is which.
+> introspection and the table graph), M2 (segmentation into a reviewable
+> `DomainPlan`, optional LLM refinement, human approval) and M3 (a
+> Kubernetes operator that serves each approved domain as a read-only REST
+> API) are implemented and tested. MCP, audit, quotas and everything after
+> them are design and roadmap; this README marks which is which.
 
 ## Why
 
@@ -37,7 +38,7 @@ approve them, and expose each domain through a narrow, read-only, audited API
 |-------|--------------|--------|
 | **1. Connect** | Read-only, catalog-only introspection: tables, columns, keys, foreign keys, indexes, comments, planner estimates. A least-privilege check warns about (or refuses) over-privileged credentials. | ✅ Implemented (M1) |
 | **2. Segment** | Build the foreign-key graph, run deterministic community detection, optionally let an LLM refine and name the domains and flag sensitive columns. Output: a `DomainPlan` that a human approves. | ✅ Implemented (M2) |
-| **3. Generate** | A Go operator turns an approved plan into one `DomainAPI` per domain: REST/OpenAPI + MCP from a generic runtime, column masking, row limits, table/column allowlist, HPA/KEDA, NetworkPolicy, Gateway API route. | 🗺️ Planned (M3-M4) |
+| **3. Generate** | A Go operator turns an approved plan into one `DomainAPI` per domain: a generic read-only REST/OpenAPI runtime with column masking, row limits, a table/column allowlist, a live catalog fingerprint check and a NetworkPolicy. MCP, HPA/KEDA and Gateway API routes come next. | ✅ REST runtime + operator (M3); 🗺️ MCP, autoscaling, Gateway (M4) |
 | **4. Govern** | Per-query audit with OpenTelemetry, per-consumer quotas. | 🗺️ Planned (M4) |
 | **5. Evaluate** | Segmentation evals in CI against Pagila, Chinook, Northwind and AdventureWorks with hand-labeled domains. | 🟡 Pagila gate in tests (M2); more datasets planned (M5) |
 
@@ -178,8 +179,8 @@ Labels are constraint names, so the diagram stays traceable to the database.
 `kabr plan` turns a catalog into a `DomainPlan`: a YAML document
 (`apiVersion: kabr.dev/v1alpha1`, `kind: DomainPlan`) that groups every table
 into exactly one domain, flags sensitive columns with a masking action, and
-waits for a human to approve it. The M3 operator will act on approved plans
-only.
+waits for a human to approve it. The M3 operator acts on approved plans
+only (see [Domain APIs on Kubernetes](#domain-apis-on-kubernetes-m3)).
 
 1. **Baseline, no AI.** Deterministic Louvain community detection on the
    foreign-key graph, plus references inferred from column names (`X_id`
@@ -231,7 +232,8 @@ kabr plan approve pagila.plan.yaml --by alice --catalog examples/pagila.schema.j
 | `kabr plan generate [--catalog FILE \| --dsn DSN] [--llm anthropic\|ollama\|none] [--model M] [--effort low\|medium\|high\|xhigh\|max] [--resolution F] [--name N] [--out FILE]` | Build a plan from a catalog file or a live, read-only introspection. |
 | `kabr plan show FILE [--format table\|yaml\|json]` | Print a plan. |
 | `kabr plan validate FILE [--catalog FILE]` | Strict decoding and validation; with `--catalog`, also coverage and fingerprint. |
-| `kabr plan approve FILE --by NAME (--catalog FILE \| --dsn DSN)` | Re-validate against the catalog (required: `--catalog`, `--dsn` or `$KABR_DSN`) and set `status.phase: Approved`. |
+| `kabr plan approve FILE --by NAME (--catalog FILE \| --dsn DSN) [--out FILE]` | Re-validate against the catalog (required: `--catalog`, `--dsn` or `$KABR_DSN`), set `status.phase: Approved` and record the approval digest. |
+| `kabr plan manifest FILE --datasource NAME [--namespace NS] [--out FILE]` | Print the `DomainPlan` custom resource of an approved plan for `kubectl apply` (M3). |
 | `kabr plan eval FILE --gold FILE` | Score against a gold standard (pairwise F1, ARI, sensitive-column metrics). |
 
 | Variable | Meaning |
@@ -324,12 +326,151 @@ ARI ≥ 0.43 and sensitive recall = 1, and a gold-standard refiner reaches
 F1 = ARI = 1, showing the refinement path can fully regroup tables. The gold
 is human judgement; see [evals/README.md](evals/README.md).
 
+## Domain APIs on Kubernetes (M3)
+
+An approved plan becomes one read-only REST API per domain:
+
+1. **`kabr serve`** is the generic runtime of one domain. It verifies the
+   live catalog fingerprint against the approved plan before serving
+   anything, then exposes the domain's tables with keyset pagination, row
+   limits (at most 1000 per response), equality filters on non-sensitive
+   columns and an OpenAPI 3.0.3 document. Sensitive columns are masked in
+   SQL, hashed with a keyed HMAC, or dropped; credentials are always
+   dropped. Every request is a read-only transaction with a statement
+   timeout, and every value is a bind parameter.
+2. **`kabr operator`** reconciles three custom resources
+   (`kabr.dev/v1alpha1`): a `DataSource` (driver, a Secret holding the DSN
+   of a read-only role, the database's network endpoint), a `DomainPlan`
+   (the approved plan, rendered by `kabr plan manifest`) and one
+   operator-owned `DomainAPI` per domain. For each DomainAPI it runs
+   `kabr serve` in a hardened Deployment with a Service and a NetworkPolicy
+   that allows egress only to the database and DNS.
+3. **Fail closed.** The operator re-checks the plan's approval digest on
+   every reconcile. A plan edited after approval loses all its DomainAPIs; a
+   hand-made or edited DomainAPI gets nothing beyond what the verified plan
+   allows; a runtime whose live catalog has drifted answers 503. The
+   operator itself never connects to the database.
+
+The approval digest proves the plan was not edited after approval; it does
+not prove who approved it. Whoever can write DomainPlans in the cluster is,
+in effect, an approver, so RBAC on the Kabr resources matters. Design:
+[ADR 0006](docs/adr/0006-operator-and-crd-model.md) (operator and CRDs),
+[ADR 0007](docs/adr/0007-runtime-query-safety.md) (query safety); threat
+model in [SECURITY.md](SECURITY.md#kubernetes-operator-and-domain-apis-m3).
+
+### Quickstart: one domain locally
+
+Against the compose demo from the [Quickstart](#quickstart) (`make
+demo-up`). `kabr serve` only accepts an approved plan, so approve the
+committed example into `bin/` first:
+
+```sh
+make demo-up build
+./bin/kabr plan approve examples/pagila.plan.yaml --by "$USER" \
+  --catalog examples/pagila.schema.json --out bin/pagila.approved.plan.yaml
+
+# The DSN comes from $KABR_DSN or --dsn-file; there is no --dsn flag.
+set -a; . deploy/compose/.env.demo; set +a
+export KABR_DSN="postgres://kabr_reader:${KABR_READER_PASSWORD}@localhost:55432/pagila?sslmode=disable"
+
+./bin/kabr serve --plan bin/pagila.approved.plan.yaml --domain film    # listens on :8080
+```
+
+In another terminal:
+
+```sh
+curl -s localhost:8080/readyz                              # {"status":"ready",...} once the fingerprint matches
+curl -s 'localhost:8080/v1/public/actor?limit=2'           # first page
+curl -s 'localhost:8080/v1/public/actor?limit=2&cursor=<nextCursor>'   # next page
+curl -s 'localhost:8080/v1/public/film?language_id=1&limit=5'          # equality filter
+curl -s localhost:8080/v1/public/film/1                    # one row by primary key
+curl -s 'localhost:8080/v1/public/actor?first_name=PENELOPE'   # 400: sensitive columns are not filterable
+curl -s localhost:8080/openapi.json
+```
+
+The shape of a list response (values elided; `first_name` and `last_name`
+are `mask` columns in the plan, so the database returns `***` and the raw
+value never reaches the process):
+
+```json
+{"items":[{"actor_id":1,"first_name":"***","last_name":"***","last_update":"…"},
+          {"actor_id":2,"first_name":"***","last_name":"***","last_update":"…"}],
+ "nextCursor":"eyJ2IjpbIjIiXX0"}
+```
+
+`nextCursor` is `null` on the last page. Errors are JSON
+(`{"error":"invalid_filter","message":"..."}`) and never contain SQL or the
+DSN. A column with action `hash` is served as a keyed HMAC only when a
+hash key is set (`KABR_HASH_KEY` or `--hash-key-file`, at least 16 bytes);
+without one it is dropped. A column of class `credential` is always
+dropped, whatever its action: in the example plan `staff.username` is
+`credential`/`hash`, so the `store` domain omits it and needs no hash key.
+
+### Quickstart: the operator on kind
+
+Requirements: Docker and `kubectl`; `kind` runs through `go run`, nothing
+to install. Every command uses the kubeconfig in `bin/` with an explicit
+`--kubeconfig` and `--context`; `~/.kube/config` and the current context
+are never read or written.
+
+```sh
+make e2e        # kind-up + demo-k8s + the e2e test; leaves the cluster running
+make e2e-down   # delete the cluster
+```
+
+`make demo-k8s` (part of `make e2e`) builds the `kabr` and Postgres+Pagila
+images, loads them into kind, creates random Secrets, deploys Pagila, the
+CRDs, the `DataSource`, proves that the live catalog fingerprint equals
+`examples/pagila.schema.json`, installs the operator, then approves the
+example plan into `bin/` and applies its `DomainPlan`. The manual
+equivalent of that last step:
+
+```sh
+./bin/kabr plan approve examples/pagila.plan.yaml --by "$USER" \
+  --catalog examples/pagila.schema.json --out bin/pagila.approved.plan.yaml
+./bin/kabr plan manifest bin/pagila.approved.plan.yaml --datasource pagila --namespace kabr-demo \
+  | kubectl --kubeconfig bin/kind-kabr.kubeconfig --context kind-kabr apply -f -
+```
+
+Then:
+
+```sh
+kubectl --kubeconfig bin/kind-kabr.kubeconfig --context kind-kabr -n kabr-demo \
+  get datasources,domainplans,domainapis
+kubectl --kubeconfig bin/kind-kabr.kubeconfig --context kind-kabr -n kabr-demo \
+  port-forward svc/pagila-film 8080:8080
+curl -s 'localhost:8080/v1/public/film?limit=5'
+```
+
+Each DomainAPI is named `<plan>-<domain>` (`pagila-city`, `pagila-film`,
+`pagila-store`), and so are its Deployment, Service and NetworkPolicy. The
+e2e test checks readiness, NetworkPolicies, pagination, masked and dropped
+columns (including the `credential` column `staff.username`), that a domain
+does not serve another domain's tables, that editing an approved
+`DomainPlan` deletes its DomainAPIs (fail closed), and that masking
+survives an edit of a `DomainAPI`. `make e2e-diagnostics` dumps the state of
+the cluster when something fails. CI runs the same suite in its `E2E (kind)`
+job.
+
+### Commands
+
+| Command | Purpose |
+|---------|---------|
+| `kabr plan manifest FILE --datasource NAME [--namespace NS] [--out FILE]` | `DomainPlan` custom resource of an approved plan; refuses (exit 1) a plan whose approval does not verify. |
+| `kabr serve (--config FILE \| --plan FILE --domain NAME) [--addr :8080] [--dsn-file F] [--hash-key-file F] [--recheck-interval D] [--row-limit N] [--max-conns N]` | Serve one domain of an approved plan. DSN from `$KABR_DSN` or `--dsn-file`; HMAC key from `$KABR_HASH_KEY` or `--hash-key-file`. |
+| `kabr operator [--runtime-image IMG] [--watch-namespace NS] [--leader-elect] [--health-probe-bind-address A] [--metrics-bind-address A]` | Run the operator. The runtime image of every DomainAPI comes from `--runtime-image` or `$KABR_RUNTIME_IMAGE`. Metrics are off by default. |
+
+Run `kabr help serve` and `kabr help operator` for every flag.
+
 ## Read-only by design
 
 Kabr will be pointed at production databases it does not own, so the M1
 introspector is built to be boring and safe. The decisions are in
 [ADR 0002](docs/adr/0002-catalog-only-read-only-access.md) and the reporting
-process in [SECURITY.md](SECURITY.md).
+process in [SECURITY.md](SECURITY.md). The M3 runtime does read rows (that
+is its job) under its own rules: read-only transactions, bind parameters
+only, row limits, masking in SQL and a catalog fingerprint gate; see
+[ADR 0007](docs/adr/0007-runtime-query-safety.md).
 
 - **Read-only session:** every connection sets
   `default_transaction_read_only = on` and a `statement_timeout`
@@ -389,10 +530,10 @@ kabr: --strict: refusing to introspect as role "kabr_unsafe" (89 privilege(s) be
 |-----------|-------|--------|
 | **M1** | Read-only PostgreSQL introspection, canonical catalog, FK graph, Mermaid/DOT export, `kabr introspect`, least-privilege check | ✅ Done |
 | **M2** | Deterministic community detection + optional LLM refinement, sensitive-column classification, `DomainPlan` with human approval, `kabr plan`, Pagila eval gate | ✅ Done |
-| **M3** | Operator (kubebuilder), `DomainAPI` CRD, generic REST/OpenAPI runtime with masking, row limits and allowlists | 🗺️ Planned |
-| **M4** | MCP server per domain, OpenTelemetry audit, quotas | 🗺️ Planned |
+| **M3** | Operator (controller-runtime), `DataSource`/`DomainPlan`/`DomainAPI` CRDs, approval digest, `kabr plan manifest`, generic read-only REST/OpenAPI runtime (`kabr serve`) with masking, row limits, allowlists and a catalog fingerprint gate, NetworkPolicy, kind demo and e2e test | ✅ Done |
+| **M4** | MCP server per domain, OpenTelemetry audit, quotas, Gateway API, HPA/KEDA, admission webhooks, signed approvals, namespaced RBAC mode, tighter ingress, authenticated metrics, Helm chart, published images | 🗺️ Planned |
 | **M5** | Segmentation evals in CI (Pagila, Chinook, Northwind, AdventureWorks) | 🗺️ Planned |
-| **M6** | End-to-end demo on kind, docs and polish | 🗺️ Planned |
+| **M6** | End-to-end demo, docs and polish (a kind demo and e2e test exist since M3) | 🗺️ Planned |
 
 ## Project layout
 
@@ -408,9 +549,15 @@ pkg/planner/         baseline DomainPlan, sensitive-column heuristic, refinement
 pkg/llm/             LLM refiners (Anthropic, Ollama), metadata-only prompt
 pkg/plan/            DomainPlan model, strict YAML, validation, approval
 pkg/eval/            scoring against gold standards (F1, ARI, sensitive columns)
-api/v1alpha1/        published DomainPlan JSON Schema
+pkg/serve/           kabr serve: read-only REST runtime of one domain
+api/v1alpha1/        CRD types (DataSource, DomainPlan, DomainAPI), DomainPlan JSON Schema
+internal/controller/ operator reconcilers and per-domain workload rendering
+config/              generated CRDs and RBAC, operator kustomization, samples
 evals/               human gold standards (Pagila)
 deploy/compose/      demo PostgreSQL + Pagila with read-only and unsafe roles
+deploy/kind/         local kind cluster, in-cluster Pagila, operator overlay
+test/e2e/            end-to-end test against the kind demo (build tag e2e)
+Dockerfile           one distroless image for kabr operator and kabr serve
 examples/            committed output of make introspect-demo and make plan-demo
 docs/                architecture and ADRs
 ```
@@ -425,20 +572,35 @@ make test-demo          # integration test against the running demo (after make 
 make lint               # go vet, gofmt, golangci-lint (pinned)
 make vuln               # govulncheck (pinned)
 make build              # bin/kabr, version from git describe
+
+make generate           # DeepCopy code (controller-gen, pinned)
+make manifests          # CRDs and operator RBAC from the Go markers
+make envtest            # + envtest: real kube-apiserver and etcd (downloaded into bin/envtest)
+make docker-build       # the kabr image (operator and runtime), IMG=kabr:dev
+make kind-up            # local kind cluster; kubeconfig in bin/kind-kabr.kubeconfig
+make demo-k8s           # images, Pagila, CRDs, DataSource, operator and DomainPlan in kind
+make e2e                # kind-up + demo-k8s + the e2e test
+make e2e-diagnostics    # dump cluster state for a failed e2e run
+make e2e-down           # delete the kind cluster (same as make kind-down)
 ```
 
 Linters and scanners run through `go run module@version`, pinned to the same
 versions as CI, so nothing has to be installed globally. CI runs lint, unit
 and integration tests, `make eval-pagila` (the graph-only Pagila eval with
 its pinned regression floors; no LLM call, no credentials) and `govulncheck`
-on every push and pull request.
+on every push and pull request, plus envtest and a check that the generated
+code and manifests are committed, and an `E2E (kind)` job that runs
+`make e2e` on a fresh kind cluster (diagnostics on failure, the cluster is
+always deleted).
 
 Design decisions are recorded as ADRs:
 [0001 Go, single module](docs/adr/0001-go-single-module.md),
 [0002 catalog-only read-only access](docs/adr/0002-catalog-only-read-only-access.md),
 [0003 CLI on the standard library](docs/adr/0003-cli-framework.md),
 [0004 segmentation: baseline, LLM refinement, approval](docs/adr/0004-segmentation-baseline-llm-approval.md),
-[0005 LLM providers and the metadata-only invariant](docs/adr/0005-llm-providers-metadata-only.md).
+[0005 LLM providers and the metadata-only invariant](docs/adr/0005-llm-providers-metadata-only.md),
+[0006 operator and CRD model](docs/adr/0006-operator-and-crd-model.md),
+[0007 runtime query safety](docs/adr/0007-runtime-query-safety.md).
 
 ## Origin
 
