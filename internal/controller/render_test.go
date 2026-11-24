@@ -349,3 +349,28 @@ func TestTruncate(t *testing.T) {
 		t.Error("short message changed")
 	}
 }
+
+// The hash key is mounted only when the runtime will hash a column: kabr
+// serve drops a credential whatever its action, so a credential with action
+// hash must not get the key mounted.
+func TestUsesHash(t *testing.T) {
+	cases := []struct {
+		name string
+		cols []plan.SensitiveColumn
+		want bool
+	}{
+		{"none", nil, false},
+		{"mask only", []plan.SensitiveColumn{{Class: plan.ClassPII, Action: plan.ActionMask}}, false},
+		{"pii hash", []plan.SensitiveColumn{{Class: plan.ClassPII, Action: plan.ActionHash}}, true},
+		{"credential hash", []plan.SensitiveColumn{{Class: plan.ClassCredential, Action: plan.ActionHash}}, false},
+		{"credential hash and financial hash", []plan.SensitiveColumn{
+			{Class: plan.ClassCredential, Action: plan.ActionHash},
+			{Class: plan.ClassFinancial, Action: plan.ActionHash},
+		}, true},
+	}
+	for _, c := range cases {
+		if got := usesHash(&serve.Config{SensitiveColumns: c.cols}); got != c.want {
+			t.Errorf("%s: usesHash = %t, want %t", c.name, got, c.want)
+		}
+	}
+}

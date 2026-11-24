@@ -19,6 +19,10 @@ env:
   # controller-gen, setup-envtest and the envtest Kubernetes version are
   # pinned in the Makefile (CONTROLLER_GEN_VERSION, SETUP_ENVTEST_VERSION,
   # ENVTEST_K8S_VERSION); the jobs below call make so there is one source.
+  # kubectl of the e2e job: the minor of the kind node image (KIND_NODE_IMAGE
+  # in the Makefile), verified against its published SHA-256.
+  KUBECTL_VERSION: v1.37.0
+  KUBECTL_SHA256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
 
 jobs:
   lint:
@@ -41,6 +45,7 @@ jobs:
           go vet -tags integration ./...
           go vet -tags llm_live ./...
           go vet -tags envtest ./...
+          go vet -tags e2e ./...
 
       - name: gofmt
         run: |
@@ -133,3 +138,44 @@ jobs:
 
       - name: govulncheck
         run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+
+  e2e:
+    name: E2E (kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Pinned kubectl (linux/amd64, the hosted runner's architecture),
+      # installed into bin/ (gitignored) instead of the runner's floating one.
+      - name: Install kubectl
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin/tools"
+          curl -fsSL --retry 3 -o "$GITHUB_WORKSPACE/bin/tools/kubectl" \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  $GITHUB_WORKSPACE/bin/tools/kubectl" | sha256sum -c -
+          chmod 0755 "$GITHUB_WORKSPACE/bin/tools/kubectl"
+          echo "$GITHUB_WORKSPACE/bin/tools" >> "$GITHUB_PATH"
+
+      # kind (run through `go run`, pinned in the Makefile) on the runner's
+      # Docker; the Makefile fetches and verifies Pagila, builds both images,
+      # deploys the operator and the approved plan, then runs test/e2e
+      # (including the fail-closed and masking-persistence checks). kind and
+      # kubectl only ever use bin/kind-kabr.kubeconfig with --context kind-kabr.
+      - name: make e2e
+        run: make e2e
+
+      - name: Diagnostics
+        if: failure()
+        run: make e2e-diagnostics
+
+      - name: Delete the kind cluster
+        if: always()
+        run: make e2e-down

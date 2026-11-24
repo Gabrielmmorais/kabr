@@ -23,7 +23,7 @@ LOAD_DEMO_ENV = test -r $(DEMO_ENV) || { echo "$(DEMO_ENV) not found - run 'make
         introspect-demo introspect-demo-unsafe \
         plan-demo eval-pagila demo-secrets demo-fetch demo-up demo-down demo-psql \
         docker-build pagila-image kind-up kind-down kind-load kind-kubeconfig \
-        demo-k8s demo-db demo-operator demo-plan demo-fingerprint e2e e2e-test e2e-down
+        demo-k8s demo-db demo-operator demo-plan demo-fingerprint e2e e2e-test e2e-down e2e-diagnostics
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_.-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -258,7 +258,8 @@ demo-k8s: docker-build pagila-image ## Full kind demo: images, DB, CRDs, operato
 
 e2e-test: ## Run the e2e test against an already deployed demo-k8s (build tag e2e)
 	$(KIND_GUARD)KIND_KUBECONFIG="$(KIND_KUBECONFIG)" KUBE_CONTEXT=$(KUBE_CONTEXT) KABR_E2E_NAMESPACE=$(DEMO_NS) \
-	KABR_E2E_OPERATOR_NAMESPACE=$(OPERATOR_NS) go test -tags e2e -count=1 -v -timeout 20m ./test/e2e/
+	KABR_E2E_OPERATOR_NAMESPACE=$(OPERATOR_NS) KABR_E2E_PLAN_MANIFEST="$(abspath $(KIND_PLAN_MANIFEST))" \
+	go test -tags e2e -count=1 -v -timeout 20m ./test/e2e/
 
 e2e: ## kind-up + demo-k8s + the e2e test (leaves the cluster up; make e2e-down deletes it)
 	$(MAKE) kind-up
@@ -266,3 +267,19 @@ e2e: ## kind-up + demo-k8s + the e2e test (leaves the cluster up; make e2e-down 
 	$(MAKE) e2e-test
 
 e2e-down: kind-down ## Delete the e2e kind cluster
+
+# State of the kind demo after a failure (CI runs it on failure). Secret
+# names are listed, never their data. Every command may fail (the cluster
+# may be half up), so none stops the others.
+e2e-diagnostics: ## Print the kind demo state: objects, events, operator and API logs (no Secret data)
+	-$(KUBECTL) get nodes -o wide
+	-$(KUBECTL) get pods -A -o wide
+	-$(KUBECTL) -n $(DEMO_NS) get datasources.kabr.dev,domainplans.kabr.dev,domainapis.kabr.dev -o yaml
+	-$(KUBECTL) -n $(DEMO_NS) get deploy,rs,svc,networkpolicy,configmap,secret -o wide
+	-$(KUBECTL) -n $(DEMO_NS) describe pods
+	-$(KUBECTL) -n $(DEMO_NS) get events --sort-by=.lastTimestamp
+	-$(KUBECTL) -n $(DEMO_NS) logs -l app.kubernetes.io/managed-by=kabr --all-containers --prefix --tail=200
+	-$(KUBECTL) -n $(DEMO_NS) logs deployment/postgres --tail=100
+	-$(KUBECTL) -n $(OPERATOR_NS) describe pods
+	-$(KUBECTL) -n $(OPERATOR_NS) get events --sort-by=.lastTimestamp
+	-$(KUBECTL) -n $(OPERATOR_NS) logs deployment/kabr-operator --all-containers --tail=500

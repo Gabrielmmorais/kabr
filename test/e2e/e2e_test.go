@@ -15,6 +15,8 @@
 //	KABR_E2E_OPERATOR_NAMESPACE  namespace of the operator (default kabr-system)
 //	KABR_E2E_PLAN                DomainPlan name (default pagila)
 //	KABR_E2E_READY_TIMEOUT       wait for the DomainAPIs, Go duration (default 5m)
+//	KABR_E2E_PLAN_MANIFEST       the applied DomainPlan manifest, re-applied after
+//	                             the fail-closed subtest (required)
 package e2e
 
 import (
@@ -47,6 +49,7 @@ type env struct {
 	kubeconfig, context string
 	ns, operatorNS      string
 	plan                string
+	planManifest        string
 	readyTimeout        time.Duration
 }
 
@@ -58,10 +61,19 @@ func loadEnv(t *testing.T) env {
 		ns:         getenv("KABR_E2E_NAMESPACE", "kabr-demo"),
 		operatorNS: getenv("KABR_E2E_OPERATOR_NAMESPACE", "kabr-system"),
 		plan:       getenv("KABR_E2E_PLAN", "pagila"),
+		// The fail-closed subtest edits the live DomainPlan and restores
+		// it from this manifest (bin/pagila.domainplan.yaml in make e2e).
+		planManifest: os.Getenv("KABR_E2E_PLAN_MANIFEST"),
 	}
 	if e.kubeconfig == "" || e.context == "" {
 		t.Fatal("KIND_KUBECONFIG and KUBE_CONTEXT must be set (run through \"make e2e\" or \"make e2e-test\"); " +
 			"the test never falls back to ~/.kube/config or the current context")
+	}
+	if e.planManifest == "" {
+		t.Fatal("KABR_E2E_PLAN_MANIFEST must name the applied DomainPlan manifest (make e2e-test sets it)")
+	}
+	if _, err := os.Stat(e.planManifest); err != nil {
+		t.Fatalf("KABR_E2E_PLAN_MANIFEST: %v", err)
 	}
 	d, err := time.ParseDuration(getenv("KABR_E2E_READY_TIMEOUT", "5m"))
 	if err != nil || d <= 0 {
@@ -107,20 +119,7 @@ func TestKabrE2E(t *testing.T) {
 		}
 	})
 
-	t.Run("DomainAPIsReady", func(t *testing.T) {
-		for _, d := range domains {
-			n := e.name(d)
-			out, err := e.kubectl(e.readyTimeout+30*time.Second, "-n", e.ns, "wait",
-				"--for=condition=Ready", "domainapis.kabr.dev/"+n, "--timeout="+e.readyTimeout.String())
-			if err != nil {
-				t.Fatalf("DomainAPI %s did not become Ready within %s: %v\n%s", n, e.readyTimeout, err, out)
-			}
-			out, err = e.kubectl(3*time.Minute, "-n", e.ns, "rollout", "status", "deployment/"+n, "--timeout=150s")
-			if err != nil {
-				t.Fatalf("Deployment %s did not roll out: %v\n%s", n, err, out)
-			}
-		}
-	})
+	t.Run("DomainAPIsReady", e.waitDomainAPIsReady)
 	if t.Failed() {
 		return
 	}
@@ -237,15 +236,15 @@ func TestKabrE2E(t *testing.T) {
 					t.Errorf("staff[%d].%s = %v (present %t), want masked \"***\"", i, c, v, ok)
 				}
 			}
-			// username: action hash with the DataSource hash key
-			// (pagila-hash-key), so it must be present, a non-empty string,
-			// and not the clear Pagila value.
-			switch u, ok := s["username"].(string); {
-			case !ok:
-				t.Errorf("staff[%d].username = %v, want a hashed string (is the hash key wired?)", i, s["username"])
-			case u == "" || u == "Mike" || u == "Jon":
-				t.Errorf("staff[%d].username = %q, want an HMAC, not the clear value", i, u)
+			// username: class credential (action hash in the plan). The
+			// runtime drops a credential whatever its action, so the key
+			// must not exist at all, hashed or clear.
+			if v, ok := s["username"]; ok {
+				t.Errorf("staff[%d] contains the credential column username (%v); credentials are always dropped", i, v)
 			}
+		}
+		if bytes.Contains(raw, []byte(`"username"`)) {
+			t.Error("staff response contains a \"username\" key")
 		}
 		if bytes.Contains(raw, []byte(`"password"`)) {
 			t.Error("staff response contains a \"password\" key")
@@ -277,6 +276,16 @@ func TestKabrE2E(t *testing.T) {
 		}
 
 		get(t, base+"/v1/public/no_such_table", http.StatusNotFound)
+
+		// The only hashed column of the store domain is a credential,
+		// which the runtime drops: the hash key Secret must not be mounted.
+		out, err := e.kubectl(30*time.Second, "-n", e.ns, "get", "deployment", e.name("store"), "-o", "json")
+		if err != nil {
+			t.Fatalf("get deployment %s: %v\n%s", e.name("store"), err, out)
+		}
+		if strings.Contains(out, "pagila-hash-key") || strings.Contains(out, "--hash-key-file") {
+			t.Errorf("deployment %s mounts the hash key although no column is hashed", e.name("store"))
+		}
 	})
 
 	t.Run("City", func(t *testing.T) {
@@ -288,6 +297,194 @@ func TestKabrE2E(t *testing.T) {
 		}
 		get(t, base+"/v1/public/film", http.StatusNotFound)
 	})
+	if t.Failed() {
+		return
+	}
+
+	// The runtime config comes from the re-verified DomainPlan, never from
+	// the DomainAPI spec: clearing the DomainAPI's sensitiveColumns changes
+	// neither the rendered config nor what is served, and the DomainPlan
+	// reconciler restores the copy.
+	t.Run("MaskingSurvivesDomainAPIEdit", func(t *testing.T) {
+		n := e.name("store")
+		before := e.configJSON(t, n)
+		gen := func() int {
+			out, err := e.kubectl(15*time.Second, "-n", e.ns, "get", "domainapis.kabr.dev", n, "-o", "jsonpath={.metadata.generation}")
+			g, cerr := strconv.Atoi(strings.TrimSpace(out))
+			if err != nil || cerr != nil {
+				t.Fatalf("generation of DomainAPI %s: %v %v\n%s", n, err, cerr, out)
+			}
+			return g
+		}
+		genBefore := gen()
+		out, err := e.kubectl(30*time.Second, "-n", e.ns, "patch", "domainapis.kabr.dev", n,
+			"--type=json", "-p", `[{"op":"remove","path":"/spec/sensitiveColumns"}]`)
+		if err != nil {
+			t.Fatalf("patch DomainAPI %s: %v\n%s", n, err, out)
+		}
+		waitFor(t, 60*time.Second, "DomainAPI "+n+" spec.sensitiveColumns restored by the operator", func() (bool, string) {
+			out, err := e.kubectl(15*time.Second, "-n", e.ns, "get", "domainapis.kabr.dev", n,
+				"-o", "jsonpath={.spec.sensitiveColumns[*].column}")
+			return err == nil && strings.Contains(out, "email"), out
+		})
+		// Two spec changes: the edit, then the operator's restore.
+		if g := gen(); g < genBefore+2 {
+			t.Errorf("DomainAPI %s generation %d, want >= %d (edit + restore)", n, g, genBefore+2)
+		}
+		if after := e.configJSON(t, n); after != before {
+			t.Errorf("ConfigMap %s-config changed after editing the DomainAPI spec", n)
+		}
+		base := e.portForward(t, n)
+		mustStatus(t, base+"/readyz", http.StatusOK, 60*time.Second)
+		raw := get(t, base+"/v1/public/customer?limit=50", http.StatusOK)
+		for i, c := range decodeList(t, raw).Items {
+			for _, col := range []string{"email", "first_name", "last_name"} {
+				if v, ok := c[col]; !ok || v != "***" {
+					t.Errorf("customer[%d].%s = %v after the DomainAPI edit, want masked \"***\"", i, col, v)
+				}
+			}
+		}
+		if bytes.Contains(bytes.ToLower(raw), []byte("@sakilacustomer.org")) {
+			t.Error("customer response leaks a clear email address after the DomainAPI edit")
+		}
+	})
+
+	// Editing the approved DomainPlan (dropping a sensitive column) breaks
+	// its approval digest: the operator deletes every DomainAPI of the plan
+	// and their workloads. Re-applying the approved manifest restores them.
+	t.Run("EditedPlanFailsClosed", func(t *testing.T) {
+		path := e.sensitiveColumnPath(t, "store", "public.customer", "email")
+		patch := fmt.Sprintf(`[{"op":"test","path":"%[1]s/column","value":"email"},{"op":"remove","path":"%[1]s"}]`, path)
+		out, err := e.kubectl(30*time.Second, "-n", e.ns, "patch", "domainplans.kabr.dev", e.plan, "--type=json", "-p", patch)
+		if err != nil {
+			t.Fatalf("patch DomainPlan %s: %v\n%s", e.plan, err, out)
+		}
+		t.Cleanup(func() { e.restorePlan(t) })
+
+		waitFor(t, 60*time.Second, "DomainPlan "+e.plan+" Ready=False/EditedAfterApproval", func() (bool, string) {
+			out, err := e.kubectl(15*time.Second, "-n", e.ns, "get", "domainplans.kabr.dev", e.plan,
+				"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}/{.status.conditions[?(@.type=="Ready")].reason}`)
+			return err == nil && out == "False/EditedAfterApproval", out
+		})
+		sel := "kabr.dev/plan=" + e.plan
+		waitFor(t, 2*time.Minute, "every DomainAPI, Deployment and Service of the plan deleted", func() (bool, string) {
+			out, err := e.kubectl(15*time.Second, "-n", e.ns, "get", "domainapis.kabr.dev,deployments,services,networkpolicies,configmaps",
+				"-l", sel, "-o", "name")
+			return err == nil && strings.TrimSpace(out) == "", out
+		})
+
+		e.restorePlan(t)
+		e.waitDomainAPIsReady(t)
+		base := e.portForward(t, e.name("store"))
+		mustStatus(t, base+"/readyz", http.StatusOK, 60*time.Second)
+		for i, c := range getList(t, base+"/v1/public/customer?limit=5").Items {
+			if v := c["email"]; v != "***" {
+				t.Errorf("customer[%d].email = %v after restoring the plan, want masked \"***\"", i, v)
+			}
+		}
+	})
+}
+
+// waitDomainAPIsReady waits until every DomainAPI exists, is Ready and its
+// Deployment rolled out. The operator creates the DomainAPIs asynchronously
+// after the DomainPlan is applied, so "wait --for=condition" alone (which
+// fails at once on a missing object) would race with it.
+func (e env) waitDomainAPIsReady(t *testing.T) {
+	t.Helper()
+	for _, d := range domains {
+		n := e.name(d)
+		out, err := e.kubectl(e.readyTimeout+30*time.Second, "-n", e.ns, "wait",
+			"--for=create", "domainapis.kabr.dev/"+n, "--timeout="+e.readyTimeout.String())
+		if err != nil {
+			t.Fatalf("DomainAPI %s was not created within %s: %v\n%s", n, e.readyTimeout, err, out)
+		}
+		out, err = e.kubectl(e.readyTimeout+30*time.Second, "-n", e.ns, "wait",
+			"--for=condition=Ready", "domainapis.kabr.dev/"+n, "--timeout="+e.readyTimeout.String())
+		if err != nil {
+			t.Fatalf("DomainAPI %s did not become Ready within %s: %v\n%s", n, e.readyTimeout, err, out)
+		}
+		// rollout status also needs the Deployment to exist.
+		out, err = e.kubectl(e.readyTimeout+30*time.Second, "-n", e.ns, "wait",
+			"--for=create", "deployment/"+n, "--timeout="+e.readyTimeout.String())
+		if err != nil {
+			t.Fatalf("Deployment %s was not created within %s: %v\n%s", n, e.readyTimeout, err, out)
+		}
+		out, err = e.kubectl(3*time.Minute, "-n", e.ns, "rollout", "status", "deployment/"+n, "--timeout=150s")
+		if err != nil {
+			t.Fatalf("Deployment %s did not roll out: %v\n%s", n, err, out)
+		}
+	}
+}
+
+// restorePlan re-applies the approved DomainPlan manifest (idempotent).
+func (e env) restorePlan(t *testing.T) {
+	t.Helper()
+	out, err := e.kubectl(60*time.Second, "apply", "-f", e.planManifest)
+	if err != nil {
+		t.Errorf("re-apply %s: %v\n%s", e.planManifest, err, out)
+	}
+}
+
+// configJSON returns the rendered runtime config of a DomainAPI.
+func (e env) configJSON(t *testing.T, api string) string {
+	t.Helper()
+	out, err := e.kubectl(30*time.Second, "-n", e.ns, "get", "configmap", api+"-config", "-o", `jsonpath={.data.domain\.json}`)
+	if err != nil || out == "" {
+		t.Fatalf("get configmap %s-config: %v\n%s", api, err, out)
+	}
+	return out
+}
+
+// sensitiveColumnPath returns the JSON pointer of a sensitive column of a
+// domain in the live DomainPlan.
+func (e env) sensitiveColumnPath(t *testing.T, domain, table, column string) string {
+	t.Helper()
+	out, err := e.kubectl(30*time.Second, "-n", e.ns, "get", "domainplans.kabr.dev", e.plan, "-o", "json")
+	if err != nil {
+		t.Fatalf("get DomainPlan %s: %v\n%s", e.plan, err, out)
+	}
+	var dp struct {
+		Spec struct {
+			Domains []struct {
+				Name             string `json:"name"`
+				SensitiveColumns []struct {
+					Table  string `json:"table"`
+					Column string `json:"column"`
+				} `json:"sensitiveColumns"`
+			} `json:"domains"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal([]byte(out), &dp); err != nil {
+		t.Fatalf("decode DomainPlan: %v", err)
+	}
+	for i, d := range dp.Spec.Domains {
+		if d.Name != domain {
+			continue
+		}
+		for j, c := range d.SensitiveColumns {
+			if c.Table == table && c.Column == column {
+				return fmt.Sprintf("/spec/domains/%d/sensitiveColumns/%d", i, j)
+			}
+		}
+	}
+	t.Fatalf("DomainPlan %s has no sensitive column %s.%s in domain %s", e.plan, table, column, domain)
+	return ""
+}
+
+// waitFor polls cond every 2s until it holds, for at most timeout.
+func waitFor(t *testing.T, timeout time.Duration, what string, cond func() (bool, string)) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		ok, last := cond()
+		if ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %s waiting for %s (last: %.500s)", timeout, what, last)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // --- port-forward -------------------------------------------------------------

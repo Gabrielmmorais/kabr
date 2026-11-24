@@ -35,7 +35,10 @@ type DataSourceSpec struct {
 
 	// HashKeySecretRef points to a Secret in the same namespace that holds
 	// the HMAC key used for sensitive columns whose action is "hash".
-	// Required by the operator only when a plan uses that action.
+	// Optional: without it the API pods drop hashed columns (fail closed)
+	// instead of hashing them. The operator mounts it only into domains
+	// that hash a column; a credential column is always dropped, whatever
+	// its action, so it never needs the key.
 	// +optional
 	HashKeySecretRef *HashKeySecretRef `json:"hashKeySecretRef,omitempty"`
 }

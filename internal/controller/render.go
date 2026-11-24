@@ -151,10 +151,12 @@ func RenderConfigMap(api *kabrv1.DomainAPI, data []byte) *corev1.ConfigMap {
 	}
 }
 
-// usesHash reports whether any sensitive column of cfg is hashed.
+// usesHash reports whether any sensitive column of cfg is hashed by the
+// runtime. A credential is dropped by kabr serve whatever its action, so a
+// credential with action hash does not need (and does not get) the key.
 func usesHash(cfg *serve.Config) bool {
 	for _, sc := range cfg.SensitiveColumns {
-		if sc.Action == plan.ActionHash {
+		if sc.Action == plan.ActionHash && sc.Class != plan.ClassCredential {
 			return true
 		}
 	}
